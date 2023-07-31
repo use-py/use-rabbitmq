@@ -29,12 +29,14 @@ def test_send(rabbitmq):
 
 
 def test_get_message_counts(rabbitmq):
-    rabbitmq.flush_queue("test-q2")
+    queue_name = "test-q2"
+    rabbitmq.declare_queue(queue_name)
+    rabbitmq.flush_queue(queue_name)
     assert rabbitmq.send(
-        queue_name="test-q2",
+        queue_name=queue_name,
         message="456"
     ) == "456"
-    assert rabbitmq.get_message_counts("test-q2") == 1
+    assert rabbitmq.get_message_counts(queue_name) == 1
 
 
 def test_flush_queue(rabbitmq):
