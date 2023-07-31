@@ -13,6 +13,14 @@ jobs:
         os: [ "ubuntu-latest" ]
         python-version: [ "3.8", "3.9", "3.10" ]
     runs-on: ${{ matrix.os }}
+    services:
+      rabbitmq:
+        image: rabbitmq:3
+        options: >-
+          --health-cmd "rabbitmqctl node_health_check"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python ${{ matrix.python-version }}
@@ -37,6 +45,8 @@ jobs:
       - name: Install library
         run: poetry install --no-interaction
       - name: Run tests
+        env:
+          RABBITMQ_HOST: rabbitmq
         run: |
           source .venv/bin/activate
           pytest tests/
