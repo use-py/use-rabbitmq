@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from usepy_plugin_rabbitmq import useRabbitMQ
@@ -6,6 +8,7 @@ from usepy_plugin_rabbitmq import useRabbitMQ
 @pytest.fixture
 def rabbitmq():
     return useRabbitMQ(
+        host=os.environ.get("RABBITMQ_HOST"),
         username="miclon",
         password="miclon"
     )
