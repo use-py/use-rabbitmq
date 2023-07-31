@@ -24,6 +24,8 @@ jobs:
         env:
           RABBITMQ_DEFAULT_USER: miclon
           RABBITMQ_DEFAULT_PASS: miclon
+        ports:
+          - 5672:5672
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python ${{ matrix.python-version }}
