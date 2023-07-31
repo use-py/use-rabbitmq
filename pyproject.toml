@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "usepy-plugin-rabbitmq"
+version = "0.1.0"
+description = ""
+authors = ["miclon <jcnd@163.com>"]
+readme = "README.md"
+packages = [
+    { include = 'usepy_plugin_rabbitmq', from = 'src' }
+]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+amqpstorm = "^2.10.6"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+

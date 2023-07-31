@@ -1,0 +1,1 @@
+# usepy-plugin-rabbitmq
