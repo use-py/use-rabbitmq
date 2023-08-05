@@ -6,7 +6,7 @@ import amqpstorm
 from amqpstorm.exception import AMQPConnectionError
 
 MAX_SEND_ATTEMPTS = 6  # 最大发送重试次数
-MAX_CONNECTION_ATTEMPTS = 2  # 最大连接重试次数
+MAX_CONNECTION_ATTEMPTS = float('inf')  # 最大连接重试次数
 MAX_CONNECTION_DELAY = 2 ** 5  # 最大延迟时间
 
 logger = logging.Logger(__name__)
