@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from threading import local
 
@@ -24,6 +25,8 @@ class RabbitMQStore:
         :param password: RabbitMQ password
         :param kwargs: RabbitMQ parameters
         """
+        self.__shutdown = False
+        self.__shutdown_event = threading.Event()
         self.state = local()
         self.parameters = {
             'hostname': host or 'localhost',
@@ -92,6 +95,10 @@ class RabbitMQStore:
                     logger.exception(f"RabbitmqStore channel close error<{exc}>")
             del self.state.channel
 
+    def shutdown(self):
+        self.__shutdown = True
+        self.__shutdown_event.set()
+
     def declare_queue(self, queue_name, arguments=None):
         """声明队列"""
         return self.channel.queue.declare(queue_name, durable=True, arguments=arguments)
@@ -123,7 +130,11 @@ class RabbitMQStore:
 
     def start_consuming(self, queue_name, callback, prefetch=1, **kwargs):
         """开始消费"""
-        while True:
+        self.__shutdown = False
+        self.__shutdown_event.clear()
+        while not self.__shutdown:
+            if self.__shutdown:
+                break
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
                 self.channel.basic.consume(queue=queue_name, callback=callback, no_ack=False, **kwargs)
@@ -136,6 +147,9 @@ class RabbitMQStore:
                 logger.exception(f"RabbitmqStore consume error<{e}>, reconnecting...")
                 del self.connection
                 time.sleep(1)
+
+    def __del__(self):
+        self.shutdown()
 
 
 useRabbitMQ = RabbitMQStore
