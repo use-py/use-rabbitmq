@@ -51,14 +51,14 @@ def test_flush_queue(rabbitmq):
 
 def test_close_connection(rabbitmq):
     rabbitmq.connection.close()
-    connection = getattr(rabbitmq.state, "connection", None)
+    connection = rabbitmq._connection
     assert connection.is_open is False
     assert rabbitmq.connection.is_open is True
 
 
 def test_close_channel(rabbitmq):
     rabbitmq.channel.close()
-    channel = getattr(rabbitmq.state, "channel", None)
+    channel = rabbitmq._channel
     assert channel.is_open is False
     assert rabbitmq.channel.is_open is True
 

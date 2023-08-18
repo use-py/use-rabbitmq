@@ -1,7 +1,6 @@
 import logging
 import threading
 import time
-from threading import local
 
 import amqpstorm
 from amqpstorm.exception import AMQPConnectionError
@@ -27,7 +26,6 @@ class RabbitMQStore:
         """
         self.__shutdown = False
         self.__shutdown_event = threading.Event()
-        self.state = local()
         self.parameters = {
             'hostname': host or 'localhost',
             'port': port or 5672,
@@ -37,6 +35,8 @@ class RabbitMQStore:
         if kwargs:
             self.parameters.update(kwargs)
         self.confirm_delivery = confirm_delivery
+        self._connection = None
+        self._channel = None
 
     def _create_connection(self):
         attempts = 1
@@ -58,46 +58,44 @@ class RabbitMQStore:
 
     @property
     def connection(self) -> amqpstorm.Connection:
-        connection = getattr(self.state, "connection", None)
-        if connection is None or not connection.is_open:
-            connection = self.state.connection = self._create_connection()
-        return connection
+        if self._connection is None or not self._connection.is_open:
+            self._connection = self._create_connection()
+        return self._connection
 
     @connection.deleter
     def connection(self):
         del self.channel
-        if _connection := getattr(self.state, "connection", None):
-            if _connection.is_open:
+        if self._connection:
+            if self._connection.is_open:
                 try:
-                    _connection.close()
+                    self._connection.close()
                 except Exception as exc:
                     logger.exception(f"RabbitmqStore connection close error<{exc}>")
-            del self.state.connection
+            self._connection = None
 
     @property
     def channel(self) -> amqpstorm.Channel:
-        connection = getattr(self.state, "connection", None)
-        channel = getattr(self.state, "channel", None)
-        if all([connection, channel]) and all([connection.is_open, channel.is_open]):
-            return channel
-        channel = self.state.channel = self.connection.channel()
+        if all([self._connection, self._channel]) and all([self._connection.is_open, self._channel.is_open]):
+            return self._channel
+        self._channel = self.connection.channel()
         if self.confirm_delivery:
-            channel.confirm_deliveries()
-        return channel
+            self._channel.confirm_deliveries()
+        return self._channel
 
     @channel.deleter
     def channel(self):
-        if _channel := getattr(self.state, "channel", None):
-            if _channel.is_open:
+        if self._channel:
+            if self._channel.is_open:
                 try:
-                    _channel.close()
+                    self._channel.close()
                 except Exception as exc:
                     logger.exception(f"RabbitmqStore channel close error<{exc}>")
-            del self.state.channel
+            self._channel = None
 
     def shutdown(self):
         self.__shutdown = True
         self.__shutdown_event.set()
+        del self.connection
 
     def declare_queue(self, queue_name, arguments=None):
         """声明队列"""
@@ -133,8 +131,6 @@ class RabbitMQStore:
         self.__shutdown = False
         self.__shutdown_event.clear()
         while not self.__shutdown:
-            if self.__shutdown:
-                break
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
                 self.channel.basic.consume(queue=queue_name, callback=callback, no_ack=False, **kwargs)
@@ -144,9 +140,14 @@ class RabbitMQStore:
                 del self.connection
                 time.sleep(1)
             except Exception as e:
+                if self.__shutdown:
+                    break
                 logger.exception(f"RabbitmqStore consume error<{e}>, reconnecting...")
                 del self.connection
                 time.sleep(1)
+            finally:
+                if self.__shutdown:
+                    break
 
     def __del__(self):
         self.shutdown()
