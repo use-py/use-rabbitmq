@@ -1,5 +1,4 @@
 import logging
-import threading
 import time
 
 import amqpstorm
@@ -25,7 +24,6 @@ class RabbitMQStore:
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
-        self.__shutdown_event = threading.Event()
         self.parameters = {
             'hostname': host or 'localhost',
             'port': port or 5672,
@@ -94,7 +92,6 @@ class RabbitMQStore:
 
     def shutdown(self):
         self.__shutdown = True
-        self.__shutdown_event.set()
         del self.connection
 
     def declare_queue(self, queue_name, arguments=None):
@@ -129,7 +126,6 @@ class RabbitMQStore:
     def start_consuming(self, queue_name, callback, prefetch=1, **kwargs):
         """开始消费"""
         self.__shutdown = False
-        self.__shutdown_event.clear()
         while not self.__shutdown:
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
