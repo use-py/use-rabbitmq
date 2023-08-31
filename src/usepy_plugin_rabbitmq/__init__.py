@@ -4,14 +4,14 @@ import time
 import amqpstorm
 from amqpstorm.exception import AMQPConnectionError
 
-MAX_SEND_ATTEMPTS = 6  # 最大发送重试次数
-MAX_CONNECTION_ATTEMPTS = float('inf')  # 最大连接重试次数
-MAX_CONNECTION_DELAY = 2 ** 5  # 最大延迟时间
-
 logger = logging.Logger(__name__)
 
 
 class RabbitMQStore:
+    MAX_SEND_ATTEMPTS = 6  # 最大发送重试次数
+    MAX_CONNECTION_ATTEMPTS = float('inf')  # 最大连接重试次数
+    MAX_CONNECTION_DELAY = 2 ** 5  # 最大延迟时间
+    RECONNECTION_DELAY = 1
 
     def __init__(self, *, confirm_delivery=True, host=None, port=None, username=None, password=None,
                  **kwargs):
@@ -38,20 +38,18 @@ class RabbitMQStore:
 
     def _create_connection(self):
         attempts = 1
-        delay = 1
-        while attempts <= MAX_CONNECTION_ATTEMPTS:
+        reconnection_delay = self.RECONNECTION_DELAY
+        while attempts <= self.MAX_CONNECTION_ATTEMPTS:
             try:
                 connector = amqpstorm.Connection(**self.parameters)
                 if attempts > 1:
                     logger.warning(f"RabbitmqStore connection succeeded after {attempts} attempts", )
                 return connector
             except AMQPConnectionError as exc:
-                logger.warning(f"RabbitmqStore connection error<{exc}>; retrying in {delay} seconds")
+                logger.warning(f"RabbitmqStore connection error<{exc}>; retrying in {reconnection_delay} seconds")
                 attempts += 1
-                time.sleep(delay)
-                if delay < MAX_CONNECTION_DELAY:
-                    delay *= 2
-                    delay = min(delay, MAX_CONNECTION_DELAY)
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(reconnection_delay * 2, self.MAX_CONNECTION_DELAY)
         raise AMQPConnectionError("RabbitmqStore connection error, max attempts reached")
 
     @property
@@ -111,7 +109,7 @@ class RabbitMQStore:
             except Exception as exc:
                 del self.connection
                 attempts += 1
-                if attempts > MAX_SEND_ATTEMPTS:
+                if attempts > self.MAX_SEND_ATTEMPTS:
                     raise exc
 
     def flush_queue(self, queue_name):
@@ -126,6 +124,7 @@ class RabbitMQStore:
     def start_consuming(self, queue_name, callback, prefetch=1, **kwargs):
         """开始消费"""
         self.__shutdown = False
+        reconnection_delay = self.RECONNECTION_DELAY
         while not self.__shutdown:
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
@@ -134,13 +133,15 @@ class RabbitMQStore:
             except AMQPConnectionError:
                 logger.warning("RabbitmqStore consume connection error, reconnecting...")
                 del self.connection
-                time.sleep(1)
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(reconnection_delay * 2, self.MAX_CONNECTION_DELAY)
             except Exception as e:
                 if self.__shutdown:
                     break
                 logger.exception(f"RabbitmqStore consume error<{e}>, reconnecting...")
                 del self.connection
-                time.sleep(1)
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(reconnection_delay * 2, self.MAX_CONNECTION_DELAY)
             finally:
                 if self.__shutdown:
                     break
