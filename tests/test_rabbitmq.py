@@ -22,6 +22,7 @@ def test_rabbitmq_channel(rabbitmq):
 
 
 def test_send(rabbitmq):
+    rabbitmq.declare_queue("test-q")
     assert rabbitmq.send(
         queue_name="test-q",
         message="123"
@@ -40,6 +41,7 @@ def test_get_message_counts(rabbitmq):
 
 
 def test_flush_queue(rabbitmq):
+    rabbitmq.declare_queue("test-q3")
     assert rabbitmq.send(
         queue_name="test-q3",
         message="789"

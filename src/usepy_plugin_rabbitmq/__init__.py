@@ -92,16 +92,15 @@ class RabbitMQStore:
         self.__shutdown = True
         del self.connection
 
-    def declare_queue(self, queue_name, arguments=None):
+    def declare_queue(self, queue_name, durable=True, **kwargs):
         """声明队列"""
-        return self.channel.queue.declare(queue_name, durable=True, arguments=arguments)
+        return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
 
     def send(self, queue_name, message, priority=None, **kwargs):
         """发送消息"""
         attempts = 1
         while True:
             try:
-                self.declare_queue(queue_name)
                 self.channel.basic.publish(
                     message, queue_name, properties=priority, **kwargs
                 )
@@ -118,7 +117,7 @@ class RabbitMQStore:
 
     def get_message_counts(self, queue_name: str) -> int:
         """获取消息数量"""
-        queue_response = self.declare_queue(queue_name)
+        queue_response = self.channel.queue.declare(queue_name, passive=True, durable=False)
         return queue_response.get("message_count", 0)
 
     def start_consuming(self, queue_name, callback, prefetch=1, **kwargs):
