@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Optional, Union, Callable
 
 import amqpstorm
 from amqpstorm.exception import AMQPConnectionError
@@ -8,13 +9,21 @@ logger = logging.Logger(__name__)
 
 
 class RabbitMQStore:
-    MAX_SEND_ATTEMPTS = 6  # 最大发送重试次数
-    MAX_CONNECTION_ATTEMPTS = float('inf')  # 最大连接重试次数
-    MAX_CONNECTION_DELAY = 2 ** 5  # 最大延迟时间
-    RECONNECTION_DELAY = 1
+    MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
+    MAX_CONNECTION_ATTEMPTS: float = float("inf")  # 最大连接重试次数
+    MAX_CONNECTION_DELAY: int = 2 ** 5  # 最大延迟时间
+    RECONNECTION_DELAY: int = 1
 
-    def __init__(self, *, confirm_delivery=True, host=None, port=None, username=None, password=None,
-                 **kwargs):
+    def __init__(
+            self,
+            *,
+            confirm_delivery: bool = True,
+            host: Optional[str] = None,
+            port: Optional[str] = None,
+            username: Optional[str] = None,
+            password: Optional[str] = None,
+            **kwargs,
+    ):
         """
         :param confirm_delivery: 是否开启消息确认
         :param host: RabbitMQ host
@@ -25,10 +34,10 @@ class RabbitMQStore:
         """
         self.__shutdown = False
         self.parameters = {
-            'hostname': host or 'localhost',
-            'port': port or 5672,
-            'username': username or 'guest',
-            'password': password or 'guest',
+            "hostname": host or "localhost",
+            "port": port or 5672,
+            "username": username or "guest",
+            "password": password or "guest",
         }
         if kwargs:
             self.parameters.update(kwargs)
@@ -43,14 +52,22 @@ class RabbitMQStore:
             try:
                 connector = amqpstorm.Connection(**self.parameters)
                 if attempts > 1:
-                    logger.warning(f"RabbitmqStore connection succeeded after {attempts} attempts", )
+                    logger.warning(
+                        f"RabbitmqStore connection succeeded after {attempts} attempts",
+                    )
                 return connector
             except AMQPConnectionError as exc:
-                logger.warning(f"RabbitmqStore connection error<{exc}>; retrying in {reconnection_delay} seconds")
+                logger.warning(
+                    f"RabbitmqStore connection error<{exc}>; retrying in {reconnection_delay} seconds"
+                )
                 attempts += 1
                 time.sleep(reconnection_delay)
-                reconnection_delay = min(reconnection_delay * 2, self.MAX_CONNECTION_DELAY)
-        raise AMQPConnectionError("RabbitmqStore connection error, max attempts reached")
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
+        raise AMQPConnectionError(
+            "RabbitmqStore connection error, max attempts reached"
+        )
 
     @property
     def connection(self) -> amqpstorm.Connection:
@@ -71,7 +88,9 @@ class RabbitMQStore:
 
     @property
     def channel(self) -> amqpstorm.Channel:
-        if all([self._connection, self._channel]) and all([self._connection.is_open, self._channel.is_open]):
+        if all([self._connection, self._channel]) and all(
+                [self._connection.is_open, self._channel.is_open]
+        ):
             return self._channel
         self._channel = self.connection.channel()
         if self.confirm_delivery:
@@ -92,11 +111,16 @@ class RabbitMQStore:
         self.__shutdown = True
         del self.connection
 
-    def declare_queue(self, queue_name, durable=True, **kwargs):
+    def declare_queue(self, queue_name: str, durable: bool = True, **kwargs):
         """声明队列"""
-        return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
+        try:
+            self.channel.queue.declare(queue_name, passive=True, durable=durable)
+        except amqpstorm.AMQPChannelError as exc:
+            if exc.error_code != 404:
+                raise exc
+            return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
 
-    def send(self, queue_name, message, priority=None, **kwargs):
+    def send(self, queue_name: str, message: Union[str, bytes], priority: Optional[dict] = None, **kwargs):
         """发送消息"""
         attempts = 1
         while True:
@@ -111,36 +135,47 @@ class RabbitMQStore:
                 if attempts > self.MAX_SEND_ATTEMPTS:
                     raise exc
 
-    def flush_queue(self, queue_name):
+    def flush_queue(self, queue_name: str):
         """清空队列"""
         self.channel.queue.purge(queue_name)
 
     def get_message_counts(self, queue_name: str) -> int:
         """获取消息数量"""
-        queue_response = self.channel.queue.declare(queue_name, passive=True, durable=False)
+        queue_response = self.channel.queue.declare(
+            queue_name, passive=True, durable=False
+        )
         return queue_response.get("message_count", 0)
 
-    def start_consuming(self, queue_name, callback, prefetch=1, **kwargs):
+    def start_consuming(self, queue_name: str, callback: Callable, prefetch=1, **kwargs):
         """开始消费"""
         self.__shutdown = False
+        no_ack = kwargs.pop("no_ack", False)
         reconnection_delay = self.RECONNECTION_DELAY
         while not self.__shutdown:
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
-                self.channel.basic.consume(queue=queue_name, callback=callback, no_ack=False, **kwargs)
+                self.channel.basic.consume(
+                    queue=queue_name, callback=callback, no_ack=no_ack, **kwargs
+                )
                 self.channel.start_consuming(to_tuple=False)
-            except AMQPConnectionError:
-                logger.warning("RabbitmqStore consume connection error, reconnecting...")
+            except AMQPConnectionError as exc:
+                logger.warning(
+                    f"RabbitmqStore consume connection error<{exc}> reconnecting..."
+                )
                 del self.connection
                 time.sleep(reconnection_delay)
-                reconnection_delay = min(reconnection_delay * 2, self.MAX_CONNECTION_DELAY)
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
             except Exception as e:
                 if self.__shutdown:
                     break
                 logger.exception(f"RabbitmqStore consume error<{e}>, reconnecting...")
                 del self.connection
                 time.sleep(reconnection_delay)
-                reconnection_delay = min(reconnection_delay * 2, self.MAX_CONNECTION_DELAY)
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
             finally:
                 if self.__shutdown:
                     break
