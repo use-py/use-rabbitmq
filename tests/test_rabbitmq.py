@@ -6,10 +6,10 @@ from usepy_plugin_rabbitmq import useRabbitMQ
 @pytest.fixture
 def rabbitmq():
     return useRabbitMQ(
-        host="127.0.0.1",
+        host="localhost",
         port=5672,
-        username="miclon",
-        password="miclon"
+        username="admin",
+        password="admin"
     )
 
 

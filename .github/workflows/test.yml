@@ -22,8 +22,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
         env:
-          RABBITMQ_DEFAULT_USER: miclon
-          RABBITMQ_DEFAULT_PASS: miclon
+          RABBITMQ_DEFAULT_USER: admin
+          RABBITMQ_DEFAULT_PASS: admin
         ports:
           - 5672:5672
     steps:
