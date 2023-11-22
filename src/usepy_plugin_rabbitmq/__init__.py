@@ -5,7 +5,7 @@ from typing import Optional, Union, Callable
 import amqpstorm
 from amqpstorm.exception import AMQPConnectionError
 
-logger = logging.Logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class RabbitMQStore:
@@ -19,7 +19,7 @@ class RabbitMQStore:
             *,
             confirm_delivery: bool = True,
             host: Optional[str] = None,
-            port: Optional[str] = None,
+            port: Optional[int] = None,
             username: Optional[str] = None,
             password: Optional[str] = None,
             **kwargs,
@@ -182,6 +182,15 @@ class RabbitMQStore:
 
     def __del__(self):
         self.shutdown()
+
+    def consume(self, queue_name: str, no_ack: bool = False, **kwargs):
+        self.declare_queue(queue_name)
+
+        def wrapper(callback):
+            logger.info(f"RabbitMQStore consume {queue_name}")
+            self.start_consuming(queue_name, callback, no_ack=no_ack, **kwargs)
+
+        return wrapper
 
 
 useRabbitMQ = RabbitMQStore
