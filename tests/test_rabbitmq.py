@@ -68,3 +68,13 @@ def test_close_channel(rabbitmq):
 def test_get_message(rabbitmq):
     message = rabbitmq.channel.basic.get("test-q2")
     assert message.body == "456"
+
+
+def test_useRabbitListener(rabbitmq):
+    queue_name = "test_queue"
+    assert rabbitmq.send(queue_name=queue_name, message="789") == "789"
+
+    @rabbitmq.listener(queue_name=queue_name)
+    def callback(message):
+        assert message.body == "789"
+        rabbitmq.stop_listener(queue_name)
