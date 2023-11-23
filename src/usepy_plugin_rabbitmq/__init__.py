@@ -183,7 +183,7 @@ class RabbitMQStore:
     def __del__(self):
         self.shutdown()
 
-    def consume(self, queue_name: str, no_ack: bool = False, **kwargs):
+    def listener(self, queue_name: str, no_ack: bool = False, **kwargs):
         self.declare_queue(queue_name)
 
         def wrapper(callback):
@@ -192,5 +192,13 @@ class RabbitMQStore:
 
         return wrapper
 
+    def stop_listener(self, queue_name: str):
+        self.channel.basic.cancel(queue_name)
+        self.shutdown()
+
 
 useRabbitMQ = RabbitMQStore
+
+
+def useRabbitListener(instance: RabbitMQStore, *, queue_name: str, no_ack: bool = False, **kwargs):
+    return instance.listener(queue_name, no_ack=no_ack, **kwargs)
