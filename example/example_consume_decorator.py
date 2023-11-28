@@ -1,6 +1,6 @@
 import logging
 
-from usepy_plugin_rabbitmq import useRabbitMQ
+from use_rabbitmq import useRabbitMQ
 
 logging.basicConfig(level=logging.INFO)
 

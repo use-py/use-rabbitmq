@@ -1,11 +1,11 @@
-# usepy-plugin-rabbitmq
+# use-rabbitmq
 
 a plugin for [usepy](https://github.com/use-py/usepy) to use rabbitmq
 
 ### example
 
 ```python
-from usepy_plugin_rabbitmq import useRabbitMQ
+from use_rabbitmq import useRabbitMQ
 
 rmq = useRabbitMQ()
 

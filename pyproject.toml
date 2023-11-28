@@ -1,11 +1,11 @@
 [tool.poetry]
-name = "usepy-plugin-rabbitmq"
+name = "use-rabbitmq"
 version = "0.1.7"
 description = ""
 authors = ["miclon <jcnd@163.com>"]
 readme = "README.md"
 packages = [
-    { include = 'usepy_plugin_rabbitmq', from = 'src' }
+    { include = 'use_rabbitmq', from = 'src' }
 ]
 
 [tool.poetry.dependencies]
@@ -13,10 +13,13 @@ python = "^3.8"
 amqpstorm = "^2.10.6"
 
 [tool.poetry.group.test.dependencies]
-pytest = [
-    { version = "^7.0.0", python = ">=3.6,<3.7" },
-    { version = "^7.3.1", python = ">=3.7" }
-]
+pylint = "*"
+pytest = "*"
+black = "*"
+flake8 = "*"
+isort = "*"
+pre-commit = "*"
+pre-commit-hooks = "*"
 
 [build-system]
 requires = ["poetry-core"]

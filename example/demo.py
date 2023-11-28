@@ -1,9 +1,15 @@
-from usepy_plugin_rabbitmq import useRabbitMQ
+from use_rabbitmq import useRabbitMQ
 
-rmq = useRabbitMQ(host="localhost", port=5672, username="admin", password="admin", confirm_delivery=True)
+rmq = useRabbitMQ(
+    host="localhost",
+    port=5672,
+    username="admin",
+    password="admin",
+    confirm_delivery=True,
+)
 
-DEAD_EXCHANGE_NAME = 'clue.exchange'
-DEAD_ROUTING_KEY = 'clue.routing.key'
+DEAD_EXCHANGE_NAME = "clue.exchange"
+DEAD_ROUTING_KEY = "clue.routing.key"
 arguments = {
     "x-dead-letter-exchange": DEAD_EXCHANGE_NAME,
     "x-dead-letter-routing-key": DEAD_ROUTING_KEY,

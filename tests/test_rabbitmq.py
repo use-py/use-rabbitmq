@@ -1,16 +1,11 @@
 import pytest
 
-from usepy_plugin_rabbitmq import useRabbitMQ
+from use_rabbitmq import useRabbitMQ
 
 
 @pytest.fixture
 def rabbitmq():
-    return useRabbitMQ(
-        host="localhost",
-        port=5672,
-        username="admin",
-        password="admin"
-    )
+    return useRabbitMQ(host="localhost", port=5672, username="admin", password="admin")
 
 
 def test_rabbitmq_connection(rabbitmq):
@@ -23,29 +18,20 @@ def test_rabbitmq_channel(rabbitmq):
 
 def test_send(rabbitmq):
     rabbitmq.declare_queue("test-q")
-    assert rabbitmq.send(
-        queue_name="test-q",
-        message="123"
-    ) == "123"
+    assert rabbitmq.send(queue_name="test-q", message="123") == "123"
 
 
 def test_get_message_counts(rabbitmq):
     queue_name = "test-q2"
     rabbitmq.declare_queue(queue_name)
     rabbitmq.flush_queue(queue_name)
-    assert rabbitmq.send(
-        queue_name=queue_name,
-        message="456"
-    ) == "456"
+    assert rabbitmq.send(queue_name=queue_name, message="456") == "456"
     assert rabbitmq.get_message_counts(queue_name) == 1
 
 
 def test_flush_queue(rabbitmq):
     rabbitmq.declare_queue("test-q3")
-    assert rabbitmq.send(
-        queue_name="test-q3",
-        message="789"
-    ) == "789"
+    assert rabbitmq.send(queue_name="test-q3", message="789") == "789"
     assert rabbitmq.get_message_counts("test-q3") == 1
     rabbitmq.flush_queue("test-q3")
     assert rabbitmq.get_message_counts("test-q3") == 0
