@@ -3,7 +3,7 @@ import time
 from typing import Callable, Optional, Union
 
 import amqpstorm
-from amqpstorm.exception import AMQPConnectionError
+from amqpstorm.exception import AMQPConnectionError, AMQPChannelError
 
 logger = logging.getLogger(__name__)
 
@@ -11,18 +11,18 @@ logger = logging.getLogger(__name__)
 class RabbitMQStore:
     MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
     MAX_CONNECTION_ATTEMPTS: float = float("inf")  # 最大连接重试次数
-    MAX_CONNECTION_DELAY: int = 2**5  # 最大延迟时间
+    MAX_CONNECTION_DELAY: int = 2 ** 5  # 最大延迟时间
     RECONNECTION_DELAY: int = 1
 
     def __init__(
-        self,
-        *,
-        confirm_delivery: bool = True,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        **kwargs,
+            self,
+            *,
+            confirm_delivery: bool = True,
+            host: Optional[str] = None,
+            port: Optional[int] = None,
+            username: Optional[str] = None,
+            password: Optional[str] = None,
+            **kwargs,
     ):
         """
         :param confirm_delivery: 是否开启消息确认
@@ -89,7 +89,7 @@ class RabbitMQStore:
     @property
     def channel(self) -> amqpstorm.Channel:
         if all([self._connection, self._channel]) and all(
-            [self._connection.is_open, self._channel.is_open]
+                [self._connection.is_open, self._channel.is_open]
         ):
             return self._channel
         self._channel = self.connection.channel()
@@ -121,11 +121,11 @@ class RabbitMQStore:
             return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
 
     def send(
-        self,
-        queue_name: str,
-        message: Union[str, bytes],
-        priority: Optional[dict] = None,
-        **kwargs,
+            self,
+            queue_name: str,
+            message: Union[str, bytes],
+            priority: Optional[dict] = None,
+            **kwargs,
     ):
         """发送消息"""
         attempts = 1
@@ -153,19 +153,31 @@ class RabbitMQStore:
         return queue_response.get("message_count", 0)
 
     def start_consuming(
-        self, queue_name: str, callback: Callable, prefetch=1, **kwargs
+            self, queue_name: str, callback: Callable, prefetch=1, **kwargs
     ):
         """开始消费"""
         self.__shutdown = False
         no_ack = kwargs.pop("no_ack", False)
         reconnection_delay = self.RECONNECTION_DELAY
+
+        def _start_consuming():
+            while not self.__shutdown:
+                try:
+                    self.channel.start_consuming(to_tuple=False)
+                except KeyError:
+                    logger.warning("Not found consumer")
+                    time.sleep(.1)
+                    continue
+
         while not self.__shutdown:
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
                 self.channel.basic.consume(
                     queue=queue_name, callback=callback, no_ack=no_ack, **kwargs
                 )
-                self.channel.start_consuming(to_tuple=False)
+                _start_consuming()
+            except AMQPChannelError as exc:
+                raise exc
             except AMQPConnectionError as exc:
                 logger.warning(
                     f"RabbitmqStore consume connection error<{exc}> reconnecting..."
@@ -209,6 +221,6 @@ useRabbitMQ = RabbitMQStore
 
 
 def useRabbitListener(
-    instance: RabbitMQStore, *, queue_name: str, no_ack: bool = False, **kwargs
+        instance: RabbitMQStore, *, queue_name: str, no_ack: bool = False, **kwargs
 ):
     return instance.listener(queue_name, no_ack=no_ack, **kwargs)
