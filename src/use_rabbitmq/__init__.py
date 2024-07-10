@@ -160,22 +160,13 @@ class RabbitMQStore:
         no_ack = kwargs.pop("no_ack", False)
         reconnection_delay = self.RECONNECTION_DELAY
 
-        def _start_consuming():
-            while not self.__shutdown:
-                try:
-                    self.channel.start_consuming(to_tuple=False)
-                except KeyError:
-                    logger.warning("Not found consumer")
-                    time.sleep(.1)
-                    continue
-
         while not self.__shutdown:
             try:
                 self.channel.basic.qos(prefetch_count=prefetch)
                 self.channel.basic.consume(
                     queue=queue_name, callback=callback, no_ack=no_ack, **kwargs
                 )
-                _start_consuming()
+                self.channel.start_consuming(to_tuple=False)
             except AMQPChannelError as exc:
                 raise exc
             except AMQPConnectionError as exc:
