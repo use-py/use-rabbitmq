@@ -137,10 +137,13 @@ class RabbitMQStore:
     ):
         """发送消息"""
         attempts = 1
+        exchange = kwargs.get("exchange", '')
+        routing_key = kwargs.get("routing_key", queue_name)
+
         while True:
             try:
                 self.channel.basic_publish(
-                    exchange='', body=message, routing_key=queue_name, properties=priority, **kwargs
+                    exchange=exchange, body=message, routing_key=routing_key, properties=priority, **kwargs
                 )
                 return message
             except Exception as exc:
