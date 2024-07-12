@@ -10,7 +10,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.8"
-amqpstorm = {git = "https://github.com/mic1on/amqpstorm.git", rev = "fix-consumer"}
+amqpstorm-fix = "2.10.7"
 
 [tool.poetry.group.test.dependencies]
 pylint = "*"
