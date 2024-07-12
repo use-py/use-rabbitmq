@@ -21,9 +21,9 @@ rmq = useRabbitMQ()
 
 
 @rmq.listener(queue_name="test")
-def test_listener(message):
-    print(message.body)
-    message.ack()  # ack message
+def test_listener(channel, deliver, properties, body):
+    print(body)
+    channel.basic_ack(deliver.delivery_tag)  # ack message
 ```
 
 if you use it with [usepy](https://github.com/use-py/usepy), you can use it like this:

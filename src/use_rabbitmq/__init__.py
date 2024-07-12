@@ -124,7 +124,7 @@ class RabbitMQStore:
         try:
             self.channel.queue_declare(queue_name, passive=True, durable=durable)
         except AMQPChannelError as exc:
-            if exc.error_code != 404:
+            if exc.reply_code != 404:
                 raise exc
             return self.channel.queue_declare(queue_name, durable=durable, **kwargs)
 
