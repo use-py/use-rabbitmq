@@ -67,6 +67,7 @@ def test_get_message(rabbitmq):
 
 def test_useRabbitListener(rabbitmq):
     queue_name = "test_queue"
+    rabbitmq.declare_queue(queue_name)
     assert rabbitmq.send(queue_name=queue_name, message="789") == "789"
 
     @rabbitmq.listener(queue_name=queue_name)
