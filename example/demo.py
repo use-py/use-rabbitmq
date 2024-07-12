@@ -18,9 +18,9 @@ arguments = {
 print(rmq.declare_queue("queue_name", arguments=arguments))
 
 
-def callback(message):
-    print(message.body)
-    message.reject(False)
+def callback(channel, deliver, properties, message):
+    print(message)
+    channel.basic_ack(deliver.delivery_tag)
 
 
 rmq.start_consuming("queue_name", callback)

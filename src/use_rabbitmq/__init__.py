@@ -2,8 +2,9 @@ import logging
 import time
 from typing import Callable, Optional, Union
 
-import amqpstorm
-from amqpstorm.exception import AMQPConnectionError, AMQPChannelError
+import pika
+from pika.channel import Channel
+from pika.exceptions import AMQPConnectionError, AMQPChannelError
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +34,12 @@ class RabbitMQStore:
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
+
+        self.username = username or "guest"
+        self.password = password or "guest"
         self.parameters = {
-            "hostname": host or "localhost",
+            "host": host or "localhost",
             "port": port or 5672,
-            "username": username or "guest",
-            "password": password or "guest",
         }
         if kwargs:
             self.parameters.update(kwargs)
@@ -50,7 +52,12 @@ class RabbitMQStore:
         reconnection_delay = self.RECONNECTION_DELAY
         while attempts <= self.MAX_CONNECTION_ATTEMPTS:
             try:
-                connector = amqpstorm.Connection(**self.parameters)
+                connector = pika.BlockingConnection(
+                    pika.ConnectionParameters(
+                        **self.parameters,
+                        credentials=pika.PlainCredentials(self.username, self.password)
+                    )
+                )
                 if attempts > 1:
                     logger.warning(
                         f"RabbitmqStore connection succeeded after {attempts} attempts",
@@ -65,12 +72,13 @@ class RabbitMQStore:
                 reconnection_delay = min(
                     reconnection_delay * 2, self.MAX_CONNECTION_DELAY
                 )
+
         raise AMQPConnectionError(
             "RabbitmqStore connection error, max attempts reached"
         )
 
     @property
-    def connection(self) -> amqpstorm.Connection:
+    def connection(self) -> pika.BlockingConnection:
         if self._connection is None or not self._connection.is_open:
             self._connection = self._create_connection()
         return self._connection
@@ -87,14 +95,14 @@ class RabbitMQStore:
             self._connection = None
 
     @property
-    def channel(self) -> amqpstorm.Channel:
+    def channel(self) -> Channel:
         if all([self._connection, self._channel]) and all(
                 [self._connection.is_open, self._channel.is_open]
         ):
             return self._channel
         self._channel = self.connection.channel()
-        if self.confirm_delivery:
-            self._channel.confirm_deliveries()
+        # if self.confirm_delivery:
+        #     self._channel.confirm_deliveries()
         return self._channel
 
     @channel.deleter
@@ -114,11 +122,11 @@ class RabbitMQStore:
     def declare_queue(self, queue_name: str, durable: bool = True, **kwargs):
         """声明队列"""
         try:
-            self.channel.queue.declare(queue_name, passive=True, durable=durable)
-        except amqpstorm.AMQPChannelError as exc:
+            self.channel.queue_declare(queue_name, passive=True, durable=durable)
+        except AMQPChannelError as exc:
             if exc.error_code != 404:
                 raise exc
-            return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
+            return self.channel.queue_declare(queue_name, durable=durable, **kwargs)
 
     def send(
             self,
@@ -131,8 +139,8 @@ class RabbitMQStore:
         attempts = 1
         while True:
             try:
-                self.channel.basic.publish(
-                    message, queue_name, properties=priority, **kwargs
+                self.channel.basic_publish(
+                    exchange='', body=message, routing_key=queue_name, properties=priority, **kwargs
                 )
                 return message
             except Exception as exc:
@@ -143,14 +151,14 @@ class RabbitMQStore:
 
     def flush_queue(self, queue_name: str):
         """清空队列"""
-        self.channel.queue.purge(queue_name)
+        self.channel.queue_purge(queue_name)
 
     def get_message_counts(self, queue_name: str) -> int:
         """获取消息数量"""
-        queue_response = self.channel.queue.declare(
+        queue_response = self.channel.queue_declare(
             queue_name, passive=True, durable=False
         )
-        return queue_response.get("message_count", 0)
+        return queue_response.method.message_count
 
     def start_consuming(
             self, queue_name: str, callback: Callable, prefetch=1, **kwargs
@@ -162,11 +170,11 @@ class RabbitMQStore:
 
         while not self.__shutdown:
             try:
-                self.channel.basic.qos(prefetch_count=prefetch)
-                self.channel.basic.consume(
-                    queue=queue_name, callback=callback, no_ack=no_ack, **kwargs
+                self.channel.basic_qos(prefetch_count=prefetch)
+                self.channel.basic_consume(
+                    queue=queue_name, on_message_callback=callback, auto_ack=no_ack, **kwargs
                 )
-                self.channel.start_consuming(to_tuple=False)
+                self.channel.start_consuming()
             except AMQPChannelError as exc:
                 raise exc
             except AMQPConnectionError as exc:
@@ -204,7 +212,7 @@ class RabbitMQStore:
         return wrapper
 
     def stop_listener(self, queue_name: str):
-        self.channel.basic.cancel(queue_name)
+        self.channel.stop_consuming(queue_name)
         self.shutdown()
 
 

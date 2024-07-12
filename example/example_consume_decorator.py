@@ -15,6 +15,6 @@ mq = useRabbitMQ(
 # @useRabbitListener(mq, queue_name="test_queue")
 # or
 @mq.listener(queue_name="test_queue")
-def do_something(message):
-    print(message.body)
-    message.ack()
+def do_something(channel, deliver, properties, body):
+    print(body)
+    channel.basic_ack(deliver.delivery_tag)
