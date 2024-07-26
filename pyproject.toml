@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "use-rabbitmq"
-version = "0.1.9"
+version = "0.2.0"
 description = ""
 authors = ["miclon <jcnd@163.com>"]
 readme = "README.md"
@@ -10,7 +10,7 @@ packages = [
 
 [tool.poetry.dependencies]
 python = "^3.8"
-amqpstorm-fix = "2.10.7"
+amqpstorm = "^2.10.8"
 
 [tool.poetry.group.test.dependencies]
 pylint = "*"
