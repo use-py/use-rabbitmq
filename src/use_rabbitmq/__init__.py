@@ -168,10 +168,10 @@ class RabbitMQStore:
                 else:
                     parameters = {
                         "confirm_delivery": True,
-                        "hostname": "testing.ceegdev.com",
+                        "hostname": "xxx",
                         "port": 5672,
-                        "username": "admin",
-                        "password": "Li=qYsaIg=KIc%d?2n5eGc6AZn4T!rkR",
+                        "username": "xxxxx",
+                        "password": "xxxxx",
                         "ssl": False
                     }
                     logger.info('use new')
