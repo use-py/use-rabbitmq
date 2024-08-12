@@ -44,6 +44,7 @@ class RabbitMQStore:
         self.confirm_delivery = confirm_delivery
         self._connection = None
         self._channel = None
+        self.isok = True
 
     def _create_connection(self):
         attempts = 1
@@ -159,22 +160,36 @@ class RabbitMQStore:
         self.__shutdown = False
         no_ack = kwargs.pop("no_ack", False)
         reconnection_delay = self.RECONNECTION_DELAY
-
         while not self.__shutdown:
             try:
-                self.channel.basic.qos(prefetch_count=prefetch)
-                self.channel.basic.consume(
+                if self.isok:  # init 函数开始默认为true
+                    channel = self.channel
+                    logger.info('use old')
+                else:
+                    parameters = {
+                        "confirm_delivery": True,
+                        "hostname": "testing.ceegdev.com",
+                        "port": 5672,
+                        "username": "admin",
+                        "password": "Li=qYsaIg=KIc%d?2n5eGc6AZn4T!rkR",
+                        "ssl": False
+                    }
+                    logger.info('use new')
+                    connection = amqpstorm.Connection(**parameters)
+                    channel = connection.channel()
+                    channel.confirm_deliveries()
+                channel.basic.qos(prefetch_count=prefetch)
+                channel.basic.consume(
                     queue=queue_name, callback=callback, no_ack=no_ack, **kwargs
                 )
-                self.channel.start_consuming(to_tuple=False)
-            except AMQPChannelError as exc:
-                raise exc
+                channel.start_consuming(to_tuple=False)
+                self.isok = True
             except AMQPConnectionError as exc:
                 logger.warning(
                     f"RabbitmqStore consume connection error<{exc}> reconnecting..."
                 )
                 del self.connection
-                time.sleep(reconnection_delay)
+                self.isok = False
                 reconnection_delay = min(
                     reconnection_delay * 2, self.MAX_CONNECTION_DELAY
                 )
