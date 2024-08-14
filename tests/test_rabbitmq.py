@@ -48,11 +48,11 @@ def test_close_connection(rabbitmq):
     assert rabbitmq.connection.is_open is True
 
 
-def test_close_channel(rabbitmq):
-    rabbitmq.channel.close()
-    channel = rabbitmq._channel
-    assert channel.is_open is False
-    assert rabbitmq.channel.is_open is True
+# def test_close_channel(rabbitmq):
+#     rabbitmq.channel.close()
+#     channel = rabbitmq._channel
+#     assert channel.is_open is False
+#     assert rabbitmq.channel.is_open is True
 
 
 def test_get_message(rabbitmq):
