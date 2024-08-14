@@ -1,14 +1,24 @@
 import logging
+import os
+import threading
 import time
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, Any, Dict
 
 import amqpstorm
+from amqpstorm import Message
 from amqpstorm.exception import AMQPConnectionError, AMQPChannelError
 
 logger = logging.getLogger(__name__)
 
 
 class RabbitMQStore:
+    """
+    RabbitMQ消息队列存储和消费类。
+
+    该类提供了与RabbitMQ交互的各种方法,包括连接、声明队列、发送消息、获取消息数量和消费消息等。
+    它还包含了重试机制和异常处理,以确保连接的可靠性和消息的正确传递。
+    """
+
     MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
     MAX_CONNECTION_ATTEMPTS: float = float("inf")  # 最大连接重试次数
     MAX_CONNECTION_DELAY: int = 2 ** 5  # 最大延迟时间
@@ -33,19 +43,19 @@ class RabbitMQStore:
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
-        self.parameters = {
-            "hostname": host or "localhost",
-            "port": port or 5672,
-            "username": username or "guest",
-            "password": password or "guest",
+        self.parameters: Dict[str, Any] = {
+            "hostname": host or os.environ.get("RABBITMQ_HOST", "localhost"),
+            "port": port or int(os.environ.get("RABBITMQ_PORT", 5672)),
+            "username": username or os.environ.get("RABBITMQ_USER", "guest"),
+            "password": password or os.environ.get("RABBITMQ_PASSWORD", "guest"),
         }
         if kwargs:
             self.parameters.update(kwargs)
         self.confirm_delivery = confirm_delivery
-        self._connection = None
-        self._channel = None
+        self._connection: Optional[amqpstorm.Connection] = None
+        self._channel: Optional[amqpstorm.Channel] = None
 
-    def _create_connection(self):
+    def _create_connection(self) -> amqpstorm.Connection:
         attempts = 1
         reconnection_delay = self.RECONNECTION_DELAY
         while attempts <= self.MAX_CONNECTION_ATTEMPTS:
@@ -76,7 +86,7 @@ class RabbitMQStore:
         return self._connection
 
     @connection.deleter
-    def connection(self):
+    def connection(self) -> None:
         del self.channel
         if self._connection:
             if self._connection.is_open:
@@ -168,9 +178,10 @@ class RabbitMQStore:
                 )
                 self.channel.start_consuming(to_tuple=False)
             except AMQPChannelError as exc:
+                logger.error(f"RabbitmqStore channel error: {exc}")
                 raise exc
             except AMQPConnectionError as exc:
-                logger.warning(
+                logger.error(
                     f"RabbitmqStore consume connection error<{exc}> reconnecting..."
                 )
                 del self.connection
@@ -197,9 +208,15 @@ class RabbitMQStore:
     def listener(self, queue_name: str, no_ack: bool = False, **kwargs):
         self.declare_queue(queue_name)
 
-        def wrapper(callback):
+        def wrapper(callback: Callable[[Message], Any]):
             logger.info(f"RabbitMQStore consume {queue_name}")
-            self.start_consuming(queue_name, callback, no_ack=no_ack, **kwargs)
+
+            def target():
+                self.start_consuming(queue_name, callback, no_ack=no_ack, **kwargs)
+
+            thread = threading.Thread(target=target)
+            thread.start()
+            return thread
 
         return wrapper
 
@@ -208,10 +225,19 @@ class RabbitMQStore:
         self.shutdown()
 
 
+class RabbitListener:
+    def __init__(self, instance: RabbitMQStore, *, queue_name: str, no_ack: bool = False, **kwargs):
+        self.instance = instance
+        self.queue_name = queue_name
+        self.no_ack = no_ack
+        self.kwargs = kwargs
+
+    def __call__(self, callback: Callable[[amqpstorm.Message], None]):
+        listener = self.instance.listener(self.queue_name, self.no_ack, **self.kwargs)
+        return listener(callback)
+
+
+# alias
+
 useRabbitMQ = RabbitMQStore
-
-
-def useRabbitListener(
-        instance: RabbitMQStore, *, queue_name: str, no_ack: bool = False, **kwargs
-):
-    return instance.listener(queue_name, no_ack=no_ack, **kwargs)
+useRabbitListener = RabbitListener

@@ -1,11 +1,15 @@
+import os
+
 import pytest
 
-from use_rabbitmq import useRabbitMQ
+from use_rabbitmq import useRabbitMQ, RabbitListener
+
+os.environ.setdefault("RABBITMQ_PASSWORD", "admin")
 
 
 @pytest.fixture
 def rabbitmq():
-    return useRabbitMQ(host="localhost", port=5672, username="admin", password="admin")
+    return useRabbitMQ(host="localhost", port=5672, username="admin")
 
 
 def test_rabbitmq_connection(rabbitmq):
@@ -60,7 +64,7 @@ def test_useRabbitListener(rabbitmq):
     queue_name = "test_queue"
     assert rabbitmq.send(queue_name=queue_name, message="789") == "789"
 
-    @rabbitmq.listener(queue_name=queue_name)
+    @RabbitListener(rabbitmq, queue_name=queue_name)
     def callback(message):
         assert message.body == "789"
         rabbitmq.stop_listener(queue_name)
