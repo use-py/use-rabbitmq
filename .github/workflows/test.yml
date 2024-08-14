@@ -58,6 +58,8 @@ jobs:
         timeout-minutes: 1 # 设置步骤超时时间为 1 分钟
         env:
           RABBITMQ_HOST: rabbitmq
+          RABBITMQ_USERNAME: admin
+          RABBITMQ_PASSWORD: admin
         run: |
           source .venv/bin/activate
           pytest tests/

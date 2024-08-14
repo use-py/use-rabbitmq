@@ -46,7 +46,7 @@ class RabbitMQStore:
         self.parameters: Dict[str, Any] = {
             "hostname": host or os.environ.get("RABBITMQ_HOST", "localhost"),
             "port": port or int(os.environ.get("RABBITMQ_PORT", 5672)),
-            "username": username or os.environ.get("RABBITMQ_USER", "guest"),
+            "username": username or os.environ.get("RABBITMQ_USERNAME", "guest"),
             "password": password or os.environ.get("RABBITMQ_PASSWORD", "guest"),
         }
         if kwargs:
