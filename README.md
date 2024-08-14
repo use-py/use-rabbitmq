@@ -15,21 +15,13 @@ A rabbitmq connector that never breaks
 ### example
 
 ```python
-from use_rabbitmq import useRabbitMQ
+from use_rabbitmq import RabbitMQStore
 
-rmq = useRabbitMQ()
+rmq = RabbitMQStore()
 
 
 @rmq.listener(queue_name="test")
 def test_listener(message):
     print(message.body)
     message.ack()  # ack message
-```
-
-if you use it with [usepy](https://github.com/use-py/usepy), you can use it like this:
-
-```python
-from usepy.plugin import useRabbitMQ
-
-rmq = useRabbitMQ()
 ```

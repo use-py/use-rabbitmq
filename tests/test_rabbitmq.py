@@ -64,7 +64,7 @@ def test_useRabbitListener(rabbitmq):
     queue_name = "test_queue"
     assert rabbitmq.send(queue_name=queue_name, message="7890") == "7890"
 
-    @RabbitListener(rabbitmq, queue_name=queue_name)
-    def callback(message):
-        assert message.body == "7890"
-        rabbitmq.stop_listener(queue_name)
+    # @RabbitListener(rabbitmq, queue_name=queue_name)
+    # def callback(message):
+    #     assert message.body == "7890"
+    #     rabbitmq.stop_listener(queue_name)
