@@ -55,6 +55,7 @@ jobs:
       - name: Install library
         run: poetry install --no-interaction
       - name: Run tests
+        timeout-minutes: 1 # 设置步骤超时时间为 1 分钟
         env:
           RABBITMQ_HOST: rabbitmq
         run: |
