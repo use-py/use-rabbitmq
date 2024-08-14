@@ -9,7 +9,7 @@ os.environ.setdefault("RABBITMQ_PASSWORD", "admin")
 
 @pytest.fixture
 def rabbitmq():
-    return useRabbitMQ(port=5672, username="admin")
+    return useRabbitMQ(host="localhost", port=5672, username="admin")
 
 
 def test_rabbitmq_connection(rabbitmq):
