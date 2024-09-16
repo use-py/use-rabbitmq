@@ -1,6 +1,7 @@
 import logging
+import time
 
-from use_rabbitmq import useRabbitMQ
+from use_rabbitmq import useRabbitMQ, useRabbitListener
 
 logging.basicConfig(level=logging.INFO)
 
@@ -12,9 +13,15 @@ mq = useRabbitMQ(
 )
 
 
-# @useRabbitListener(mq, queue_name="test_queue")
-# or
-@mq.listener(queue_name="test_queue")
+def stop_listener_when_timeout(client):
+    if time.time() - client.last_message_time > 10:
+        print("停止监听")
+        return True
+
+
+@useRabbitListener(
+    mq, queue_name="test_queue", stop_listener=stop_listener_when_timeout
+)
 def do_something(message):
     print(message.body)
     message.ack()

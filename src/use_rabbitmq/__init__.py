@@ -21,18 +21,18 @@ class RabbitMQStore:
 
     MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
     MAX_CONNECTION_ATTEMPTS: float = float("inf")  # 最大连接重试次数
-    MAX_CONNECTION_DELAY: int = 2 ** 5  # 最大延迟时间
+    MAX_CONNECTION_DELAY: int = 2**5  # 最大延迟时间
     RECONNECTION_DELAY: int = 1
 
     def __init__(
-            self,
-            *,
-            confirm_delivery: bool = True,
-            host: Optional[str] = None,
-            port: Optional[int] = None,
-            username: Optional[str] = None,
-            password: Optional[str] = None,
-            **kwargs,
+        self,
+        *,
+        confirm_delivery: bool = True,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        **kwargs,
     ):
         """
         :param confirm_delivery: 是否开启消息确认
@@ -99,7 +99,7 @@ class RabbitMQStore:
     @property
     def channel(self) -> amqpstorm.Channel:
         if all([self._connection, self._channel]) and all(
-                [self._connection.is_open, self._channel.is_open]
+            [self._connection.is_open, self._channel.is_open]
         ):
             return self._channel
         self._channel = self.connection.channel()
@@ -131,11 +131,11 @@ class RabbitMQStore:
             return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
 
     def send(
-            self,
-            queue_name: str,
-            message: Union[str, bytes],
-            priority: Optional[dict] = None,
-            **kwargs,
+        self,
+        queue_name: str,
+        message: Union[str, bytes],
+        priority: Optional[dict] = None,
+        **kwargs,
     ):
         """发送消息"""
         attempts = 1
@@ -163,7 +163,7 @@ class RabbitMQStore:
         return queue_response.get("message_count", 0)
 
     def start_consuming(
-            self, queue_name: str, callback: Callable, prefetch=1, **kwargs
+        self, queue_name: str, callback: Callable, prefetch=1, **kwargs
     ):
         """开始消费"""
         self.__shutdown = False
@@ -226,18 +226,52 @@ class RabbitMQStore:
 
 
 class RabbitListener:
-    def __init__(self, instance: RabbitMQStore, *, queue_name: str, no_ack: bool = False, **kwargs):
+    def __init__(
+        self,
+        instance: RabbitMQStore,
+        *,
+        queue_name: str,
+        no_ack: bool = False,
+        stop_listener: Callable = None,
+        **kwargs,
+    ):
         self.instance = instance
         self.queue_name = queue_name
         self.no_ack = no_ack
         self.kwargs = kwargs
+        self.stop_listener = stop_listener
+        self.last_message_time = time.time()
+        self.should_stop = False
 
     def __call__(self, callback: Callable[[amqpstorm.Message], None]):
-        listener = self.instance.listener(self.queue_name, self.no_ack, **self.kwargs)
-        return listener(callback)
+
+        def wrapped_callback(message):
+            self.last_message_time = time.time()
+            callback(message)
+
+        def monitor_thread():
+            while not self.should_stop:
+                time.sleep(1)
+                if self.stop_listener and self.stop_listener(self):
+                    logger.info("停止监听器")
+                    self.should_stop = True
+                    self.instance.shutdown()
+                    break
+
+        def consume_thread():
+            listener = self.instance.listener(
+                self.queue_name, self.no_ack, **self.kwargs
+            )
+            listener(wrapped_callback)
+
+        consume_thread = threading.Thread(target=consume_thread)
+        monitor_thread = threading.Thread(target=monitor_thread)
+
+        consume_thread.start()
+        monitor_thread.start()
+        return consume_thread, monitor_thread
 
 
 # alias
-
 useRabbitMQ = RabbitMQStore
 useRabbitListener = RabbitListener
