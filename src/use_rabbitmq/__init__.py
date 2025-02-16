@@ -134,7 +134,7 @@ class RabbitMQStore:
             self,
             queue_name: str,
             message: Union[str, bytes],
-            priority: Optional[dict] = None,
+            properties: Optional[dict] = None,
             **kwargs,
     ):
         """发送消息"""
@@ -142,7 +142,7 @@ class RabbitMQStore:
         while True:
             try:
                 self.channel.basic.publish(
-                    message, queue_name, properties=priority, **kwargs
+                    message, queue_name, properties=properties, **kwargs
                 )
                 return message
             except Exception as exc:
