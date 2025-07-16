@@ -148,7 +148,7 @@ class RabbitMQStore:
                     message, queue_name, properties=properties, **kwargs
                 )
                 return message
-            except (AMQPConnectionError, AMQPChannelError) as exc:
+            except Exception as exc:
                 del self.connection
                 attempts += 1
                 if attempts > self.MAX_SEND_ATTEMPTS:
