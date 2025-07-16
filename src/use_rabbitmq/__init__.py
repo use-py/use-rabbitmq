@@ -43,6 +43,7 @@ class RabbitMQStore:
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
+        self._lock = threading.Lock()
         self.parameters: Dict[str, Any] = {
             "hostname": host or os.environ.get("RABBITMQ_HOST", "localhost"),
             "port": port or int(os.environ.get("RABBITMQ_PORT", 5672)),
@@ -81,9 +82,10 @@ class RabbitMQStore:
 
     @property
     def connection(self) -> amqpstorm.Connection:
-        if self._connection is None or not self._connection.is_open:
-            self._connection = self._create_connection()
-        return self._connection
+        with self._lock:
+            if self._connection is None or not self._connection.is_open:
+                self._connection = self._create_connection()
+            return self._connection
 
     @connection.deleter
     def connection(self) -> None:
@@ -98,14 +100,15 @@ class RabbitMQStore:
 
     @property
     def channel(self) -> amqpstorm.Channel:
-        if all([self._connection, self._channel]) and all(
-                [self._connection.is_open, self._channel.is_open]
-        ):
+        with self._lock:
+            if all([self._connection, self._channel]) and all(
+                    [self._connection.is_open, self._channel.is_open]
+            ):
+                return self._channel
+            self._channel = self.connection.channel()
+            if self.confirm_delivery:
+                self._channel.confirm_deliveries()
             return self._channel
-        self._channel = self.connection.channel()
-        if self.confirm_delivery:
-            self._channel.confirm_deliveries()
-        return self._channel
 
     @channel.deleter
     def channel(self):
@@ -136,7 +139,7 @@ class RabbitMQStore:
             message: Union[str, bytes],
             properties: Optional[dict] = None,
             **kwargs,
-    ):
+    ) -> Union[str, bytes]:
         """发送消息"""
         attempts = 1
         while True:
@@ -145,11 +148,12 @@ class RabbitMQStore:
                     message, queue_name, properties=properties, **kwargs
                 )
                 return message
-            except Exception as exc:
+            except (AMQPConnectionError, AMQPChannelError) as exc:
                 del self.connection
                 attempts += 1
                 if attempts > self.MAX_SEND_ATTEMPTS:
                     raise exc
+                time.sleep(min(attempts * 0.5, 2))  # 添加重试延迟
 
     def flush_queue(self, queue_name: str):
         """清空队列"""
@@ -220,9 +224,15 @@ class RabbitMQStore:
 
         return wrapper
 
-    def stop_listener(self, queue_name: str):
-        self.channel.basic.cancel(queue_name)
-        self.shutdown()
+    def stop_listener(self, queue_name: str) -> None:
+        """停止监听指定队列"""
+        try:
+            if self._channel and self._channel.is_open:
+                self.channel.basic.cancel(queue_name)
+        except Exception as exc:
+            logger.warning(f"Error canceling consumer for queue {queue_name}: {exc}")
+        finally:
+            self.shutdown()
 
 
 class RabbitListener:
