@@ -43,6 +43,7 @@ class RabbitMQStore:
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
+        self._lock = threading.Lock()
         self.parameters: Dict[str, Any] = {
             "hostname": host or os.environ.get("RABBITMQ_HOST", "localhost"),
             "port": port or int(os.environ.get("RABBITMQ_PORT", 5672)),
@@ -81,9 +82,10 @@ class RabbitMQStore:
 
     @property
     def connection(self) -> amqpstorm.Connection:
-        if self._connection is None or not self._connection.is_open:
-            self._connection = self._create_connection()
-        return self._connection
+        with self._lock:
+            if self._connection is None or not self._connection.is_open:
+                self._connection = self._create_connection()
+            return self._connection
 
     @connection.deleter
     def connection(self) -> None:
@@ -98,14 +100,18 @@ class RabbitMQStore:
 
     @property
     def channel(self) -> amqpstorm.Channel:
-        if all([self._connection, self._channel]) and all(
-                [self._connection.is_open, self._channel.is_open]
-        ):
+        with self._lock:
+            if all([self._connection, self._channel]) and all(
+                    [self._connection.is_open, self._channel.is_open]
+            ):
+                return self._channel
+            # 避免在锁内调用 self.connection 属性，直接使用 _connection
+            if self._connection is None or not self._connection.is_open:
+                self._connection = self._create_connection()
+            self._channel = self._connection.channel()
+            if self.confirm_delivery:
+                self._channel.confirm_deliveries()
             return self._channel
-        self._channel = self.connection.channel()
-        if self.confirm_delivery:
-            self._channel.confirm_deliveries()
-        return self._channel
 
     @channel.deleter
     def channel(self):
@@ -136,7 +142,7 @@ class RabbitMQStore:
             message: Union[str, bytes],
             properties: Optional[dict] = None,
             **kwargs,
-    ):
+    ) -> Union[str, bytes]:
         """发送消息"""
         attempts = 1
         while True:
@@ -150,6 +156,7 @@ class RabbitMQStore:
                 attempts += 1
                 if attempts > self.MAX_SEND_ATTEMPTS:
                     raise exc
+                time.sleep(min(attempts * 0.5, 2))  # 添加重试延迟
 
     def flush_queue(self, queue_name: str):
         """清空队列"""
@@ -179,8 +186,12 @@ class RabbitMQStore:
                 self.channel.start_consuming(to_tuple=False)
             except AMQPChannelError as exc:
                 logger.error(f"RabbitmqStore channel error: {exc}")
+                if self.__shutdown:
+                    break
                 raise exc
             except AMQPConnectionError as exc:
+                if self.__shutdown:
+                    break
                 logger.error(
                     f"RabbitmqStore consume connection error<{exc}> reconnecting..."
                 )
@@ -199,6 +210,12 @@ class RabbitMQStore:
                     reconnection_delay * 2, self.MAX_CONNECTION_DELAY
                 )
             finally:
+                # 确保在退出时停止消费
+                try:
+                    if self._channel and self._channel.is_open:
+                        self._channel.stop_consuming()
+                except Exception as exc:
+                    logger.warning(f"Error stopping consuming: {exc}")
                 if self.__shutdown:
                     break
 
@@ -214,15 +231,31 @@ class RabbitMQStore:
             def target():
                 self.start_consuming(queue_name, callback, no_ack=no_ack, **kwargs)
 
-            thread = threading.Thread(target=target)
+            thread = threading.Thread(target=target, daemon=True)  # 使用daemon线程，确保主程序退出时线程也会退出
             thread.start()
             return thread
 
         return wrapper
 
-    def stop_listener(self, queue_name: str):
-        self.channel.basic.cancel(queue_name)
-        self.shutdown()
+    def stop_listener(self, queue_name: str) -> None:
+        """停止监听指定队列"""
+        try:
+            if self._channel and self._channel.is_open:
+                # 停止消费
+                self._channel.stop_consuming()
+                # 取消消费者
+                self._channel.basic.cancel(queue_name)
+        except Exception as exc:
+            logger.warning(f"Error canceling consumer for queue {queue_name}: {exc}")
+        finally:
+            # 设置关闭标志
+            self.__shutdown = True
+            # 关闭连接
+            try:
+                del self.channel
+                del self.connection
+            except Exception as exc:
+                logger.warning(f"Error closing connection: {exc}")
 
 
 class RabbitListener:
