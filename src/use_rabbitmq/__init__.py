@@ -185,10 +185,15 @@ class RabbitMQStore:
                 )
                 self.channel.start_consuming(to_tuple=False)
             except AMQPChannelError as exc:
-                logger.error(f"RabbitmqStore channel error: {exc}")
                 if self.__shutdown:
                     break
-                raise exc
+                logger.error(f"RabbitmqStore channel error: {exc}")
+                del self.channel
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
+
             except AMQPConnectionError as exc:
                 if self.__shutdown:
                     break
