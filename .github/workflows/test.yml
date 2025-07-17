@@ -32,34 +32,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           
-      - name: Cache Poetry installation
+      - name: Cache pip packages
         uses: actions/cache@v3
         with:
-          path: ~/.local
-          key: poetry-${{ runner.os }}-${{ matrix.python-version }}
-          
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 - --version 1.5.1
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          
-      - name: Configure Poetry
-        run: |
-          poetry config virtualenvs.create true
-          poetry config virtualenvs.in-project true
-          poetry config installer.parallel true
-          
-      - name: Cache dependencies
-        uses: actions/cache@v3
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
           restore-keys: |
-            venv-${{ runner.os }}-${{ matrix.python-version }}-
+            pip-${{ runner.os }}-${{ matrix.python-version }}-
             
-      - name: Install dependencies
+      - name: Install dependencies directly with pip
         run: |
-          poetry install --only=main,test --no-interaction
+          python -m pip install --upgrade pip
+          python -m pip install amqpstorm pytest
+          python -m pip install -e .
           
       - name: Wait for RabbitMQ
         run: |
@@ -72,4 +57,4 @@ jobs:
           RABBITMQ_USERNAME: admin
           RABBITMQ_PASSWORD: admin
         run: |
-          poetry run pytest tests/ -v --tb=short --disable-warnings
+          python -m pytest tests/ -v --tb=short --disable-warnings
