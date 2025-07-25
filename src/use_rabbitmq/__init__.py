@@ -17,6 +17,11 @@ class RabbitMQStore:
 
     该类提供了与RabbitMQ交互的各种方法,包括连接、声明队列、发送消息、获取消息数量和消费消息等。
     它还包含了重试机制和异常处理,以确保连接的可靠性和消息的正确传递。
+    
+    支持上下文管理器模式:
+        with RabbitMQStore() as mq:
+            mq.send('queue', 'message')
+        # 自动调用shutdown()
     """
 
     MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
@@ -89,43 +94,94 @@ class RabbitMQStore:
 
     @connection.deleter
     def connection(self) -> None:
-        del self.channel
-        if self._connection:
-            if self._connection.is_open:
+        with self._lock:
+            # 先删除channel
+            if self._channel:
                 try:
-                    self._connection.close()
+                    if self._channel.is_open:
+                        self._channel.close()
+                except Exception as exc:
+                    logger.exception(f"RabbitmqStore channel close error<{exc}>")
+                finally:
+                    self._channel = None
+            
+            # 再删除connection
+            if self._connection:
+                try:
+                    if self._connection.is_open:
+                        self._connection.close()
                 except Exception as exc:
                     logger.exception(f"RabbitmqStore connection close error<{exc}>")
-            self._connection = None
+                finally:
+                    self._connection = None
 
     @property
     def channel(self) -> amqpstorm.Channel:
         with self._lock:
-            if all([self._connection, self._channel]) and all(
-                    [self._connection.is_open, self._channel.is_open]
-            ):
+            # 检查现有连接和通道是否可用
+            if (self._connection and self._connection.is_open and 
+                self._channel and self._channel.is_open):
                 return self._channel
-            # 避免在锁内调用 self.connection 属性，直接使用 _connection
+            
+            # 确保有有效的连接
             if self._connection is None or not self._connection.is_open:
                 self._connection = self._create_connection()
+            
+            # 创建新的通道
             self._channel = self._connection.channel()
-            if self.confirm_delivery:
+            if self.confirm_delivery and self._channel:
                 self._channel.confirm_deliveries()
+            
+            # 确保返回有效的通道
+            if self._channel is None:
+                raise RuntimeError("Failed to create channel")
             return self._channel
 
     @channel.deleter
     def channel(self):
-        if self._channel:
-            if self._channel.is_open:
+        with self._lock:
+            if self._channel:
                 try:
-                    self._channel.close()
+                    if self._channel.is_open:
+                        self._channel.close()
                 except Exception as exc:
                     logger.exception(f"RabbitmqStore channel close error<{exc}>")
-            self._channel = None
+                finally:
+                    self._channel = None
 
     def shutdown(self):
+        """安全关闭RabbitMQ连接和通道"""
         self.__shutdown = True
-        del self.connection
+        with self._lock:
+            try:
+                # 先停止消费
+                if self._channel and self._channel.is_open:
+                    try:
+                        self._channel.stop_consuming()
+                    except Exception as exc:
+                        logger.warning(f"Error stopping consuming during shutdown: {exc}")
+                
+                # 关闭通道
+                if self._channel:
+                    try:
+                        if self._channel.is_open:
+                            self._channel.close()
+                    except Exception as exc:
+                        logger.warning(f"Error closing channel during shutdown: {exc}")
+                    finally:
+                        self._channel = None
+                
+                # 关闭连接
+                if self._connection:
+                    try:
+                        if self._connection.is_open:
+                            self._connection.close()
+                    except Exception as exc:
+                        logger.warning(f"Error closing connection during shutdown: {exc}")
+                    finally:
+                        self._connection = None
+            except Exception as exc:
+                logger.error(f"Error during shutdown: {exc}")
 
     def declare_queue(self, queue_name: str, durable: bool = True, **kwargs):
         """声明队列"""
@@ -224,8 +280,21 @@ class RabbitMQStore:
                 if self.__shutdown:
                     break
 
-    def __del__(self):
+    def __enter__(self):
+        """上下文管理器入口"""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """上下文管理器退出，自动清理资源"""
         self.shutdown()
+        return False  # 不抑制异常
+    
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            # 忽略析构函数中的异常，避免影响程序退出
+            pass
 
     def listener(self, queue_name: str, no_ack: bool = False, **kwargs):
         self.declare_queue(queue_name)
