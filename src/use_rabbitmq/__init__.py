@@ -2,13 +2,265 @@ import logging
 import os
 import threading
 import time
-from typing import Callable, Optional, Union, Any, Dict
+import uuid
+from typing import Callable, Optional, Union, Any, Dict, List
+from collections import defaultdict
+from contextlib import contextmanager
+from queue import Queue, Empty
 
 import amqpstorm
 from amqpstorm import Message
 from amqpstorm.exception import AMQPConnectionError, AMQPChannelError
 
 logger = logging.getLogger(__name__)
+
+
+class ConnectionPool:
+    """
+    RabbitMQ连接池管理器
+    
+    提供连接复用、自动清理和负载均衡功能，提高性能和资源利用率。
+    支持多个RabbitMQStore实例共享连接池。
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if hasattr(self, '_initialized'):
+            return
+        self._initialized = True
+        self._pools = defaultdict(Queue)  # 按连接参数分组的连接池
+        self._pool_locks = defaultdict(threading.Lock)
+        self._connection_counts = defaultdict(int)
+        self._max_connections = 10  # 每个池的最大连接数
+        self._cleanup_lock = threading.Lock()
+    
+    def _get_pool_key(self, parameters: Dict[str, Any]) -> str:
+        """根据连接参数生成池键"""
+        key_params = {
+            'hostname': parameters.get('hostname', 'localhost'),
+            'port': parameters.get('port', 5672),
+            'username': parameters.get('username', 'guest'),
+            'virtual_host': parameters.get('virtual_host', '/')
+        }
+        return str(sorted(key_params.items()))
+    
+    def get_connection(self, parameters: Dict[str, Any], client_name: Optional[str] = None) -> amqpstorm.Connection:
+        """从连接池获取连接"""
+        pool_key = self._get_pool_key(parameters)
+        pool = self._pools[pool_key]
+        pool_lock = self._pool_locks[pool_key]
+        
+        with pool_lock:
+            # 尝试从池中获取可用连接
+            while not pool.empty():
+                try:
+                    connection = pool.get_nowait()
+                    if connection.is_open:
+                        logger.debug(f"从连接池获取连接: {pool_key}")
+                        return connection
+                    else:
+                        # 连接已关闭，减少计数
+                        self._connection_counts[pool_key] -= 1
+                except Empty:
+                    break
+            
+            # 池中没有可用连接，创建新连接
+            if self._connection_counts[pool_key] < self._max_connections:
+                try:
+                    # 添加客户端名称支持
+                    conn_params = parameters.copy()
+                    if client_name:
+                        conn_params['client_properties'] = {
+                            'connection_name': client_name,
+                            'client_name': client_name,
+                            'created_at': time.strftime('%Y-%m-%d %H:%M:%S')
+                        }
+                    
+                    connection = amqpstorm.Connection(**conn_params)
+                    self._connection_counts[pool_key] += 1
+                    logger.debug(f"创建新连接: {pool_key}, 当前连接数: {self._connection_counts[pool_key]}")
+                    return connection
+                except Exception as e:
+                    logger.error(f"创建连接失败: {e}")
+                    raise
+            else:
+                raise RuntimeError(f"连接池已满，最大连接数: {self._max_connections}")
+    
+    def return_connection(self, connection: amqpstorm.Connection, parameters: Dict[str, Any]):
+        """将连接返回到池中"""
+        if not connection.is_open:
+            pool_key = self._get_pool_key(parameters)
+            with self._pool_locks[pool_key]:
+                self._connection_counts[pool_key] -= 1
+            return
+        
+        pool_key = self._get_pool_key(parameters)
+        pool = self._pools[pool_key]
+        pool_lock = self._pool_locks[pool_key]
+        
+        with pool_lock:
+            if pool.qsize() < self._max_connections:
+                pool.put(connection)
+                logger.debug(f"连接返回到池: {pool_key}")
+            else:
+                # 池已满，关闭连接
+                try:
+                    connection.close()
+                except Exception as e:
+                    logger.warning(f"关闭多余连接时出错: {e}")
+                self._connection_counts[pool_key] -= 1
+    
+    def cleanup_pool(self, pool_key: Optional[str] = None):
+        """清理连接池"""
+        with self._cleanup_lock:
+            if pool_key:
+                self._cleanup_single_pool(pool_key)
+            else:
+                # 清理所有池
+                for key in list(self._pools.keys()):
+                    self._cleanup_single_pool(key)
+    
+    def _cleanup_single_pool(self, pool_key: str):
+        """清理单个连接池"""
+        pool = self._pools[pool_key]
+        pool_lock = self._pool_locks[pool_key]
+        
+        with pool_lock:
+            while not pool.empty():
+                try:
+                    connection = pool.get_nowait()
+                    if connection.is_open:
+                        connection.close()
+                    self._connection_counts[pool_key] -= 1
+                except Empty:
+                    break
+                except Exception as e:
+                    logger.warning(f"清理连接时出错: {e}")
+            
+            # 清理空的数据结构
+            if self._connection_counts[pool_key] <= 0:
+                del self._pools[pool_key]
+                del self._pool_locks[pool_key]
+                del self._connection_counts[pool_key]
+    
+    def get_pool_stats(self) -> Dict[str, Dict[str, int]]:
+        """获取连接池统计信息"""
+        stats = {}
+        for pool_key in self._pools.keys():
+            with self._pool_locks[pool_key]:
+                stats[pool_key] = {
+                    'total_connections': self._connection_counts[pool_key],
+                    'available_connections': self._pools[pool_key].qsize(),
+                    'active_connections': self._connection_counts[pool_key] - self._pools[pool_key].qsize()
+                }
+        return stats
+
+
+class ChannelManager:
+    """
+    单连接多通道管理器
+    
+    为单个连接管理多个通道，提高资源利用率和性能。
+    支持通道复用、自动清理和故障恢复。
+    """
+    
+    def __init__(self, connection: amqpstorm.Connection, max_channels: int = 20):
+        self.connection = connection
+        self.max_channels = max_channels
+        self._channels = Queue()
+        self._channel_count = 0
+        self._lock = threading.Lock()
+        self._confirm_delivery = True
+    
+    def set_confirm_delivery(self, confirm_delivery: bool):
+        """设置消息确认模式"""
+        self._confirm_delivery = confirm_delivery
+    
+    @contextmanager
+    def get_channel(self):
+        """获取通道的上下文管理器"""
+        channel = self._acquire_channel()
+        try:
+            yield channel
+        finally:
+            self._release_channel(channel)
+    
+    def _acquire_channel(self) -> amqpstorm.Channel:
+        """获取通道"""
+        with self._lock:
+            # 尝试从池中获取可用通道
+            while not self._channels.empty():
+                try:
+                    channel = self._channels.get_nowait()
+                    if channel.is_open:
+                        return channel
+                    else:
+                        self._channel_count -= 1
+                except Empty:
+                    break
+            
+            # 创建新通道
+            if self._channel_count < self.max_channels:
+                if not self.connection.is_open:
+                    raise AMQPConnectionError("连接已关闭")
+                
+                channel = self.connection.channel()
+                if self._confirm_delivery:
+                    channel.confirm_deliveries()
+                self._channel_count += 1
+                return channel
+            else:
+                raise RuntimeError(f"通道池已满，最大通道数: {self.max_channels}")
+    
+    def _release_channel(self, channel: amqpstorm.Channel):
+        """释放通道"""
+        if not channel.is_open:
+            with self._lock:
+                self._channel_count -= 1
+            return
+        
+        with self._lock:
+            if self._channels.qsize() < self.max_channels:
+                self._channels.put(channel)
+            else:
+                # 池已满，关闭通道
+                try:
+                    channel.close()
+                except Exception as e:
+                    logger.warning(f"关闭多余通道时出错: {e}")
+                self._channel_count -= 1
+    
+    def cleanup(self):
+        """清理所有通道"""
+        with self._lock:
+            while not self._channels.empty():
+                try:
+                    channel = self._channels.get_nowait()
+                    if channel.is_open:
+                        channel.close()
+                    self._channel_count -= 1
+                except Empty:
+                    break
+                except Exception as e:
+                    logger.warning(f"清理通道时出错: {e}")
+    
+    def get_stats(self) -> Dict[str, int]:
+        """获取通道管理器统计信息"""
+        with self._lock:
+            return {
+                'total_channels': self._channel_count,
+                'available_channels': self._channels.qsize(),
+                'active_channels': self._channel_count - self._channels.qsize()
+            }
 
 
 class RabbitMQStore:
@@ -37,6 +289,10 @@ class RabbitMQStore:
             port: Optional[int] = None,
             username: Optional[str] = None,
             password: Optional[str] = None,
+            client_name: Optional[str] = None,
+            use_connection_pool: bool = True,
+            use_channel_manager: bool = True,
+            max_channels: int = 20,
             **kwargs,
     ):
         """
@@ -45,6 +301,10 @@ class RabbitMQStore:
         :param port: RabbitMQ port
         :param username: RabbitMQ username
         :param password: RabbitMQ password
+        :param client_name: 客户端自定义名称，用于监控和调试
+        :param use_connection_pool: 是否使用连接池管理
+        :param use_channel_manager: 是否使用多通道管理器
+        :param max_channels: 最大通道数（仅在use_channel_manager=True时有效）
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
@@ -57,16 +317,48 @@ class RabbitMQStore:
         }
         if kwargs:
             self.parameters.update(kwargs)
+        
+        # 核心配置
         self.confirm_delivery = confirm_delivery
+        self.client_name = client_name or f"use-rabbitmq-{uuid.uuid4().hex[:8]}"
+        self.use_connection_pool = use_connection_pool
+        self.use_channel_manager = use_channel_manager
+        self.max_channels = max_channels
+        
+        # 连接和通道管理
         self._connection: Optional[amqpstorm.Connection] = None
         self._channel: Optional[amqpstorm.Channel] = None
+        self._connection_pool: Optional[ConnectionPool] = None
+        self._channel_manager: Optional[ChannelManager] = None
+        
+        # 初始化连接池（如果启用）
+        if self.use_connection_pool:
+            self._connection_pool = ConnectionPool()
+        
+        logger.info(f"RabbitMQStore初始化完成，客户端名称: {self.client_name}")
 
     def _create_connection(self) -> amqpstorm.Connection:
+        # 如果启用连接池，从池中获取连接
+        if self.use_connection_pool and self._connection_pool:
+            try:
+                return self._connection_pool.get_connection(self.parameters, self.client_name)
+            except Exception as exc:
+                logger.warning(f"从连接池获取连接失败，回退到直接创建: {exc}")
+        
+        # 直接创建连接（原有逻辑）
         attempts = 1
         reconnection_delay = self.RECONNECTION_DELAY
         while attempts <= self.MAX_CONNECTION_ATTEMPTS:
             try:
-                connector = amqpstorm.Connection(**self.parameters)
+                # 添加客户端名称支持
+                conn_params = self.parameters.copy()
+                conn_params['client_properties'] = {
+                    'connection_name': self.client_name,
+                    'client_name': self.client_name,
+                    'created_at': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                
+                connector = amqpstorm.Connection(**conn_params)
                 if attempts > 1:
                     logger.warning(
                         f"RabbitmqStore connection succeeded after {attempts} attempts",
@@ -90,12 +382,29 @@ class RabbitMQStore:
         with self._lock:
             if self._connection is None or not self._connection.is_open:
                 self._connection = self._create_connection()
+                
+                # 如果启用通道管理器，初始化它
+                if self.use_channel_manager:
+                    if self._channel_manager:
+                        self._channel_manager.cleanup()
+                    self._channel_manager = ChannelManager(self._connection, self.max_channels)
+                    self._channel_manager.set_confirm_delivery(self.confirm_delivery)
+                    
             return self._connection
 
     @connection.deleter
     def connection(self) -> None:
         with self._lock:
-            # 先删除channel
+            # 清理通道管理器
+            if self._channel_manager:
+                try:
+                    self._channel_manager.cleanup()
+                except Exception as exc:
+                    logger.exception(f"RabbitmqStore channel manager cleanup error<{exc}>")
+                finally:
+                    self._channel_manager = None
+            
+            # 先删除channel（兼容原有逻辑）
             if self._channel:
                 try:
                     if self._channel.is_open:
@@ -105,11 +414,16 @@ class RabbitMQStore:
                 finally:
                     self._channel = None
             
-            # 再删除connection
+            # 处理connection
             if self._connection:
                 try:
-                    if self._connection.is_open:
-                        self._connection.close()
+                    # 如果使用连接池，将连接返回到池中
+                    if self.use_connection_pool and self._connection_pool:
+                        self._connection_pool.return_connection(self._connection, self.parameters)
+                    else:
+                        # 否则直接关闭连接
+                        if self._connection.is_open:
+                            self._connection.close()
                 except Exception as exc:
                     logger.exception(f"RabbitmqStore connection close error<{exc}>")
                 finally:
@@ -117,6 +431,16 @@ class RabbitMQStore:
 
     @property
     def channel(self) -> amqpstorm.Channel:
+        # 如果启用通道管理器，使用管理器获取通道
+        if self.use_channel_manager:
+            # 确保连接可用
+            _ = self.connection  # 这会触发连接和通道管理器的初始化
+            if self._channel_manager:
+                return self._channel_manager._acquire_channel()
+            else:
+                raise RuntimeError("通道管理器未初始化")
+        
+        # 原有的单通道逻辑（向后兼容）
         with self._lock:
             # 检查现有连接和通道是否可用
             if (self._connection and self._connection.is_open and 
@@ -137,8 +461,29 @@ class RabbitMQStore:
                 raise RuntimeError("Failed to create channel")
             return self._channel
 
+    @contextmanager
+    def get_channel(self):
+        """获取通道的上下文管理器（推荐用于多通道模式）"""
+        if self.use_channel_manager and self._channel_manager:
+            with self._channel_manager.get_channel() as channel:
+                yield channel
+        else:
+            # 回退到普通通道
+            channel = self.channel
+            try:
+                yield channel
+            finally:
+                # 在非通道管理器模式下，不需要特殊清理
+                pass
+    
     @channel.deleter
     def channel(self):
+        # 注意：在通道管理器模式下，不建议直接删除通道
+        # 应该使用 get_channel() 上下文管理器
+        if self.use_channel_manager:
+            logger.warning("在通道管理器模式下不建议直接删除通道，请使用 get_channel() 上下文管理器")
+            return
+            
         with self._lock:
             if self._channel:
                 try:
@@ -161,7 +506,16 @@ class RabbitMQStore:
                     except Exception as exc:
                         logger.warning(f"Error stopping consuming during shutdown: {exc}")
                 
-                # 关闭通道
+                # 清理通道管理器
+                if self._channel_manager:
+                    try:
+                        self._channel_manager.cleanup()
+                    except Exception as exc:
+                        logger.warning(f"Error cleaning up channel manager during shutdown: {exc}")
+                    finally:
+                        self._channel_manager = None
+                
+                # 关闭通道（兼容原有逻辑）
                 if self._channel:
                     try:
                         if self._channel.is_open:
@@ -171,26 +525,73 @@ class RabbitMQStore:
                     finally:
                         self._channel = None
                 
-                # 关闭连接
+                # 处理连接
                 if self._connection:
                     try:
-                        if self._connection.is_open:
-                            self._connection.close()
+                        # 如果使用连接池，将连接返回到池中
+                        if self.use_connection_pool and self._connection_pool:
+                            self._connection_pool.return_connection(self._connection, self.parameters)
+                        else:
+                            # 否则直接关闭连接
+                            if self._connection.is_open:
+                                self._connection.close()
                     except Exception as exc:
                         logger.warning(f"Error closing connection during shutdown: {exc}")
                     finally:
                         self._connection = None
+                        
             except Exception as exc:
                 logger.error(f"Error during shutdown: {exc}")
+        
+        logger.info(f"RabbitMQStore客户端 {self.client_name} 已安全关闭")
+    
+    def get_connection_pool_stats(self) -> Optional[Dict[str, Dict[str, int]]]:
+        """获取连接池统计信息"""
+        if self.use_connection_pool and self._connection_pool:
+            return self._connection_pool.get_pool_stats()
+        return None
+    
+    def get_channel_manager_stats(self) -> Optional[Dict[str, int]]:
+        """获取通道管理器统计信息"""
+        if self.use_channel_manager and self._channel_manager:
+            return self._channel_manager.get_stats()
+        return None
+    
+    def get_client_info(self) -> Dict[str, Any]:
+        """获取客户端信息"""
+        return {
+            'client_name': self.client_name,
+            'use_connection_pool': self.use_connection_pool,
+            'use_channel_manager': self.use_channel_manager,
+            'max_channels': self.max_channels,
+            'confirm_delivery': self.confirm_delivery,
+            'connection_parameters': {
+                'hostname': self.parameters.get('hostname'),
+                'port': self.parameters.get('port'),
+                'username': self.parameters.get('username'),
+                'virtual_host': self.parameters.get('virtual_host', '/')
+            },
+            'connection_pool_stats': self.get_connection_pool_stats(),
+            'channel_manager_stats': self.get_channel_manager_stats()
+        }
 
     def declare_queue(self, queue_name: str, durable: bool = True, **kwargs):
         """声明队列"""
-        try:
-            self.channel.queue.declare(queue_name, passive=True, durable=durable)
-        except amqpstorm.AMQPChannelError as exc:
-            if exc.error_code != 404:
-                raise exc
-            return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
+        if self.use_channel_manager:
+            with self.get_channel() as channel:
+                try:
+                    channel.queue.declare(queue_name, passive=True, durable=durable)
+                except amqpstorm.AMQPChannelError as exc:
+                    if exc.error_code != 404:
+                        raise exc
+                    return channel.queue.declare(queue_name, durable=durable, **kwargs)
+        else:
+            try:
+                self.channel.queue.declare(queue_name, passive=True, durable=durable)
+            except amqpstorm.AMQPChannelError as exc:
+                if exc.error_code != 404:
+                    raise exc
+                return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
 
     def send(
             self,
@@ -203,9 +604,17 @@ class RabbitMQStore:
         attempts = 1
         while True:
             try:
-                self.channel.basic.publish(
-                    message, queue_name, properties=properties, **kwargs
-                )
+                # 如果启用通道管理器，使用上下文管理器
+                if self.use_channel_manager:
+                    with self.get_channel() as channel:
+                        channel.basic.publish(
+                            message, queue_name, properties=properties, **kwargs
+                        )
+                else:
+                    # 原有逻辑
+                    self.channel.basic.publish(
+                        message, queue_name, properties=properties, **kwargs
+                    )
                 return message
             except Exception as exc:
                 del self.connection
@@ -216,14 +625,25 @@ class RabbitMQStore:
 
     def flush_queue(self, queue_name: str):
         """清空队列"""
-        self.channel.queue.purge(queue_name)
+        if self.use_channel_manager:
+            with self.get_channel() as channel:
+                channel.queue.purge(queue_name)
+        else:
+            self.channel.queue.purge(queue_name)
 
     def get_message_counts(self, queue_name: str) -> int:
         """获取消息数量"""
-        queue_response = self.channel.queue.declare(
-            queue_name, passive=True, durable=False
-        )
-        return queue_response.get("message_count", 0)
+        if self.use_channel_manager:
+            with self.get_channel() as channel:
+                queue_response = channel.queue.declare(
+                    queue_name, passive=True, durable=False
+                )
+                return queue_response.get("message_count", 0)
+        else:
+            queue_response = self.channel.queue.declare(
+                queue_name, passive=True, durable=False
+            )
+            return queue_response.get("message_count", 0)
 
     def start_consuming(
             self, queue_name: str, callback: Callable, prefetch=1, **kwargs
