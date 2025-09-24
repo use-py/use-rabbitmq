@@ -576,22 +576,61 @@ class RabbitMQStore:
         }
 
     def declare_queue(self, queue_name: str, durable: bool = True, **kwargs):
-        """声明队列"""
+        """声明队列
+        
+        Args:
+            queue_name: 队列名称
+            durable: 是否持久化
+            **kwargs: 其他队列声明参数
+            
+        Returns:
+            队列声明结果，如果队列已存在则返回 None
+        """
+        return self._execute_queue_operation(
+            lambda channel: self._declare_queue_with_channel(channel, queue_name, durable, **kwargs)
+        )
+    
+    def _declare_queue_with_channel(self, channel, queue_name: str, durable: bool = True, **kwargs):
+        """使用指定通道声明队列"""
+        try:
+            # 首先尝试被动声明（检查队列是否存在）
+            channel.queue.declare(queue_name, passive=True, durable=durable)
+            return None  # 队列已存在
+        except amqpstorm.AMQPChannelError as exc:
+            if exc.error_code != 404:
+                raise exc
+            # 队列不存在，创建队列
+            return channel.queue.declare(queue_name, durable=durable, **kwargs)
+    
+    def _execute_queue_operation(self, operation):
+        """执行队列操作的通用方法，处理通道管理和错误恢复"""
         if self.use_channel_manager:
-            with self.get_channel() as channel:
-                try:
-                    channel.queue.declare(queue_name, passive=True, durable=durable)
-                except amqpstorm.AMQPChannelError as exc:
-                    if exc.error_code != 404:
-                        raise exc
-                    return channel.queue.declare(queue_name, durable=durable, **kwargs)
+            return self._execute_with_channel_manager(operation)
         else:
-            try:
-                self.channel.queue.declare(queue_name, passive=True, durable=durable)
-            except amqpstorm.AMQPChannelError as exc:
-                if exc.error_code != 404:
-                    raise exc
-                return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
+            return self._execute_with_traditional_channel(operation)
+    
+    def _execute_with_channel_manager(self, operation):
+        """使用通道管理器执行操作"""
+        try:
+            with self.get_channel() as channel:
+                return operation(channel)
+        except amqpstorm.AMQPChannelError as exc:
+            if exc.error_code == 404:
+                # 通道因404错误关闭，使用新通道重试
+                with self.get_channel() as new_channel:
+                    return operation(new_channel)
+            raise exc
+    
+    def _execute_with_traditional_channel(self, operation):
+        """使用传统通道执行操作"""
+        try:
+            return operation(self.channel)
+        except amqpstorm.AMQPChannelError as exc:
+            if exc.error_code == 404:
+                # 通道因404错误关闭，重新创建通道并重试
+                del self.channel  # 强制重新创建通道
+                return operation(self.channel)
+            raise exc
 
     def send(
             self,
