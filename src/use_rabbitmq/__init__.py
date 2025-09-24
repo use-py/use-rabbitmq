@@ -370,28 +370,20 @@ class RabbitMQStore:
         :param kwargs: 其他参数
         """
         channel = self.get_channel(channel_id)
-        
-        def wrapper(message: Message):
-            try:
-                callback(message)
-                message.ack()
-            except Exception as exc:
-                logger.exception(f"Error processing message: {exc}")
-                message.nack(requeue=True)
 
         # 设置预取数量
         channel.basic.qos(prefetch_count=prefetch)
 
         # 开始消费
         channel.basic.consume(
-            callback=wrapper,
+            callback=callback,
             queue=queue_name,
             **kwargs
         )
 
         # 启动消费循环
         try:
-            channel.start_consuming()
+            channel.start_consuming(to_tuple=False)
         except KeyboardInterrupt:
             logger.info("Consuming interrupted by user")
             channel.stop_consuming()
