@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "use-rabbitmq"
-version = "0.3.0"
+version = "0.3.1a"
 description = ""
 authors = ["miclon <jcnd@163.com>"]
 readme = "README.md"
