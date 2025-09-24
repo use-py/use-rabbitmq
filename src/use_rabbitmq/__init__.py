@@ -336,6 +336,7 @@ class RabbitMQStore:
                 attempts += 1
                 if attempts > self.MAX_SEND_ATTEMPTS:
                     raise exc
+                time.sleep(self.RECONNECTION_DELAY)
 
     def flush_queue(self, queue_name: str, channel_id: Optional[str] = None):
         """清空队列
@@ -354,7 +355,7 @@ class RabbitMQStore:
         :return: 消息数量
         """
         channel = self.get_channel(channel_id)
-        result = channel.queue.declare(queue_name, passive=True)
+        result = channel.queue.declare(queue_name, passive=True, durable=False)
         return result["message_count"]
 
     def start_consuming(
