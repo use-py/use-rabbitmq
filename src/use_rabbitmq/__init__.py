@@ -369,28 +369,65 @@ class RabbitMQStore:
         :param channel_id: 指定使用的channel ID，如果为None则使用默认channel
         :param kwargs: 其他参数
         """
-        channel = self.get_channel(channel_id)
+        self.__shutdown = False
+        no_ack = kwargs.pop("no_ack", False)
+        reconnection_delay = self.RECONNECTION_DELAY
+        
+        while not self.__shutdown:
+            try:
+            
+                channel = self.get_channel(channel_id)
 
-        # 设置预取数量
-        channel.basic.qos(prefetch_count=prefetch)
+                # 设置预取数量
+                channel.basic.qos(prefetch_count=prefetch)
 
-        # 开始消费
-        channel.basic.consume(
-            callback=callback,
-            queue=queue_name,
-            **kwargs
-        )
+                # 开始消费
+                channel.basic.consume(
+                    callback=callback,
+                    queue=queue_name,
+                    no_ack=no_ack,
+                    **kwargs
+                )
 
-        # 启动消费循环
-        try:
-            channel.start_consuming(to_tuple=False)
-        except KeyboardInterrupt:
-            logger.info("Consuming interrupted by user")
-            channel.stop_consuming()
-        except Exception as exc:
-            logger.exception(f"Error during consuming: {exc}")
-            channel.stop_consuming()
-            raise
+            except amqpstorm.AMQPChannelError as exc:
+                if self.__shutdown:
+                    break
+                logger.error(f"RabbitmqStore channel error: {exc}")
+                del channel
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
+
+            except AMQPConnectionError as exc:
+                if self.__shutdown:
+                    break
+                logger.error(
+                    f"RabbitmqStore consume connection error<{exc}> reconnecting..."
+                )
+                del self.connection
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
+            except Exception as e:
+                if self.__shutdown:
+                    break
+                logger.exception(f"RabbitmqStore consume error<{e}>, reconnecting...")
+                del self.connection
+                time.sleep(reconnection_delay)
+                reconnection_delay = min(
+                    reconnection_delay * 2, self.MAX_CONNECTION_DELAY
+                )
+            finally:
+                # 确保在退出时停止消费
+                try:
+                    if self._channel and self._channel.is_open:
+                        self._channel.stop_consuming()
+                except Exception as exc:
+                    logger.warning(f"Error stopping consuming: {exc}")
+                if self.__shutdown:
+                    break
 
     def __enter__(self):
         """上下文管理器入口"""
