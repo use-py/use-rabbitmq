@@ -389,7 +389,7 @@ class RabbitMQStore:
                     **kwargs
                 )
                 # 启动消费循环
-                channel.start_consuming()
+                channel.start_consuming(to_tuple=False)
 
             except amqpstorm.AMQPChannelError as exc:
                 if self.__shutdown:
