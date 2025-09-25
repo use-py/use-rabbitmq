@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from typing import Callable, Optional, Union, Any, Dict
+import uuid
 
 import amqpstorm
 from amqpstorm import Message
@@ -22,6 +23,14 @@ class RabbitMQStore:
         with RabbitMQStore() as mq:
             mq.send('queue', 'message')
         # 自动调用shutdown()
+        
+    支持多channel管理:
+        # 获取新的channel
+        channel_id = mq.create_channel()
+        # 使用指定channel发送消息
+        mq.send('queue', 'message', channel_id=channel_id)
+        # 释放channel
+        mq.close_channel(channel_id)
     """
 
     MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
@@ -60,6 +69,10 @@ class RabbitMQStore:
         self.confirm_delivery = confirm_delivery
         self._connection: Optional[amqpstorm.Connection] = None
         self._channel: Optional[amqpstorm.Channel] = None
+        
+        # 多channel管理
+        self._channels: Dict[str, amqpstorm.Channel] = {}
+        self._channel_lock = threading.Lock()
 
     def _create_connection(self) -> amqpstorm.Connection:
         attempts = 1
@@ -95,17 +108,28 @@ class RabbitMQStore:
     @connection.deleter
     def connection(self) -> None:
         with self._lock:
-            # 先删除channel
+            # 先删除所有channels
+            with self._channel_lock:
+                for channel_id, channel in list(self._channels.items()):
+                    try:
+                        if channel and channel.is_open:
+                            channel.close()
+                    except Exception as exc:
+                        logger.exception(f"RabbitmqStore channel {channel_id} close error<{exc}>")
+                    finally:
+                        del self._channels[channel_id]
+            
+            # 删除默认channel
             if self._channel:
                 try:
                     if self._channel.is_open:
                         self._channel.close()
                 except Exception as exc:
-                    logger.exception(f"RabbitmqStore channel close error<{exc}>")
+                    logger.exception(f"RabbitmqStore default channel close error<{exc}>")
                 finally:
                     self._channel = None
             
-            # 再删除connection
+            # 删除连接
             if self._connection:
                 try:
                     if self._connection.is_open:
@@ -149,6 +173,88 @@ class RabbitMQStore:
                 finally:
                     self._channel = None
 
+    def create_channel(self) -> str:
+        """
+        创建一个新的channel并返回channel_id
+        
+        :return: channel_id
+        """
+        with self._channel_lock:
+            channel_id = str(uuid.uuid4())
+            try:
+                # 确保连接可用
+                connection = self.connection
+                channel = connection.channel()
+                if self.confirm_delivery:
+                    channel.confirm_deliveries()
+                self._channels[channel_id] = channel
+                logger.debug(f"Created new channel: {channel_id}")
+                return channel_id
+            except Exception as exc:
+                logger.exception(f"Failed to create channel: {exc}")
+                raise
+
+    def get_channel(self, channel_id: Optional[str] = None) -> amqpstorm.Channel:
+        """
+        获取指定的channel，如果channel_id为None则返回默认channel
+        
+        :param channel_id: channel ID，如果为None则使用默认channel
+        :return: amqpstorm.Channel
+        """
+        if channel_id is None:
+            return self.channel
+        
+        with self._channel_lock:
+            if channel_id not in self._channels:
+                raise ValueError(f"Channel {channel_id} not found")
+            
+            channel = self._channels[channel_id]
+            if not channel.is_open:
+                # 重新创建channel
+                try:
+                    connection = self.connection
+                    new_channel = connection.channel()
+                    if self.confirm_delivery:
+                        new_channel.confirm_deliveries()
+                    self._channels[channel_id] = new_channel
+                    logger.debug(f"Recreated channel: {channel_id}")
+                    return new_channel
+                except Exception as exc:
+                    logger.exception(f"Failed to recreate channel {channel_id}: {exc}")
+                    raise
+            
+            return channel
+
+    def close_channel(self, channel_id: str) -> None:
+        """
+        关闭并移除指定的channel
+        
+        :param channel_id: channel ID
+        """
+        with self._channel_lock:
+            if channel_id in self._channels:
+                channel = self._channels[channel_id]
+                try:
+                    if channel.is_open:
+                        channel.close()
+                except Exception as exc:
+                    logger.exception(f"Error closing channel {channel_id}: {exc}")
+                finally:
+                    del self._channels[channel_id]
+                    logger.debug(f"Closed channel: {channel_id}")
+
+    def list_channels(self) -> Dict[str, bool]:
+        """
+        列出所有channel及其状态
+        
+        :return: {channel_id: is_open}
+        """
+        with self._channel_lock:
+            result = {}
+            for channel_id, channel in self._channels.items():
+                result[channel_id] = channel.is_open
+            return result
+
     def shutdown(self):
         """安全关闭RabbitMQ连接和通道"""
         self.__shutdown = True
@@ -183,27 +289,45 @@ class RabbitMQStore:
             except Exception as exc:
                 logger.error(f"Error during shutdown: {exc}")
 
-    def declare_queue(self, queue_name: str, durable: bool = True, **kwargs):
-        """声明队列"""
+    def declare_queue(self, queue_name: str, durable: bool = True, channel_id: Optional[str] = None, **kwargs):
+        """声明队列
+        
+        :param queue_name: 队列名称
+        :param durable: 是否持久化
+        :param channel_id: 指定使用的channel ID，如果为None则使用默认channel
+        :param kwargs: 其他参数
+        """
+        channel = self.get_channel(channel_id)
         try:
-            self.channel.queue.declare(queue_name, passive=True, durable=durable)
+            channel.queue.declare(queue_name, passive=True, durable=durable)
         except amqpstorm.AMQPChannelError as exc:
             if exc.error_code != 404:
                 raise exc
-            return self.channel.queue.declare(queue_name, durable=durable, **kwargs)
+            channel = self.get_channel(channel_id)
+            return channel.queue.declare(queue_name, durable=durable, **kwargs)
 
     def send(
             self,
             queue_name: str,
             message: Union[str, bytes],
             properties: Optional[dict] = None,
+            channel_id: Optional[str] = None,
             **kwargs,
     ) -> Union[str, bytes]:
-        """发送消息"""
+        """发送消息
+        
+        :param queue_name: 队列名称
+        :param message: 消息内容
+        :param properties: 消息属性
+        :param channel_id: 指定使用的channel ID，如果为None则使用默认channel
+        :param kwargs: 其他参数
+        :return: 发送的消息
+        """
         attempts = 1
         while True:
             try:
-                self.channel.basic.publish(
+                channel = self.get_channel(channel_id)
+                channel.basic.publish(
                     message, queue_name, properties=properties, **kwargs
                 )
                 return message
@@ -212,39 +336,66 @@ class RabbitMQStore:
                 attempts += 1
                 if attempts > self.MAX_SEND_ATTEMPTS:
                     raise exc
-                time.sleep(min(attempts * 0.5, 2))  # 添加重试延迟
+                time.sleep(self.RECONNECTION_DELAY)
 
-    def flush_queue(self, queue_name: str):
-        """清空队列"""
-        self.channel.queue.purge(queue_name)
+    def flush_queue(self, queue_name: str, channel_id: Optional[str] = None):
+        """清空队列
+        
+        :param queue_name: 队列名称
+        :param channel_id: 指定使用的channel ID，如果为None则使用默认channel
+        """
+        channel = self.get_channel(channel_id)
+        channel.queue.purge(queue_name)
 
-    def get_message_counts(self, queue_name: str) -> int:
-        """获取消息数量"""
-        queue_response = self.channel.queue.declare(
-            queue_name, passive=True, durable=False
-        )
-        return queue_response.get("message_count", 0)
+    def get_message_counts(self, queue_name: str, channel_id: Optional[str] = None) -> int:
+        """获取队列中的消息数量
+        
+        :param queue_name: 队列名称
+        :param channel_id: 指定使用的channel ID，如果为None则使用默认channel
+        :return: 消息数量
+        """
+        channel = self.get_channel(channel_id)
+        result = channel.queue.declare(queue_name, passive=True, durable=False)
+        return result["message_count"]
 
     def start_consuming(
-            self, queue_name: str, callback: Callable, prefetch=1, **kwargs
+            self, queue_name: str, callback: Callable, prefetch=1, channel_id: Optional[str] = None, **kwargs
     ):
-        """开始消费"""
+        """开始消费消息
+        
+        :param queue_name: 队列名称
+        :param callback: 回调函数
+        :param prefetch: 预取数量
+        :param channel_id: 指定使用的channel ID，如果为None则使用默认channel
+        :param kwargs: 其他参数
+        """
         self.__shutdown = False
         no_ack = kwargs.pop("no_ack", False)
         reconnection_delay = self.RECONNECTION_DELAY
-
+        
         while not self.__shutdown:
             try:
-                self.channel.basic.qos(prefetch_count=prefetch)
-                self.channel.basic.consume(
-                    queue=queue_name, callback=callback, no_ack=no_ack, **kwargs
+            
+                channel = self.get_channel(channel_id)
+
+                # 设置预取数量
+                channel.basic.qos(prefetch_count=prefetch)
+
+                # 开始消费
+                channel.basic.consume(
+                    callback=callback,
+                    queue=queue_name,
+                    no_ack=no_ack,
+                    **kwargs
                 )
-                self.channel.start_consuming(to_tuple=False)
-            except AMQPChannelError as exc:
+                # 启动消费循环
+                channel.start_consuming(to_tuple=False)
+
+            except amqpstorm.AMQPChannelError as exc:
                 if self.__shutdown:
                     break
                 logger.error(f"RabbitmqStore channel error: {exc}")
-                del self.channel
+                del channel
                 time.sleep(reconnection_delay)
                 reconnection_delay = min(
                     reconnection_delay * 2, self.MAX_CONNECTION_DELAY
