@@ -50,7 +50,7 @@ class RabbitMQStore:
             port: Optional[int] = None,
             username: Optional[str] = None,
             password: Optional[str] = None,
-            client_name: Optional[str] = "use-rabbitmq-client",
+            client_name: Optional[str] = None,
             **kwargs,
     ):
         """
@@ -59,7 +59,7 @@ class RabbitMQStore:
         :param port: RabbitMQ port
         :param username: RabbitMQ username
         :param password: RabbitMQ password
-        :param client_name: 客户端名称，用于标识连接，默认值为"use-rabbitmq-client"
+        :param client_name: 客户端名称，用于标识连接，默认为None时会自动生成
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
@@ -70,6 +70,10 @@ class RabbitMQStore:
             "username": username or os.environ.get("RABBITMQ_USERNAME", "guest"),
             "password": password or os.environ.get("RABBITMQ_PASSWORD", "guest"),
         }
+        # 添加client_name到连接参数中
+        if client_name is None:
+            # 生成默认的客户端名称，包含随机后缀
+            client_name = f"use-rabbitmq-client-{uuid.uuid4().hex[:5]}"
         self.parameters["client_properties"] = {"connection_name": client_name}
         if kwargs:
             self.parameters.update(kwargs)
