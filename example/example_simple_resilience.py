@@ -59,7 +59,8 @@ class SimpleResilienceTest:
                     host='localhost',
                     port=5672,
                     username='admin',
-                    password='admin'
+                    password='admin',
+                    client_name='resilience-test-client'
                 )
                 
                 # 测试连接

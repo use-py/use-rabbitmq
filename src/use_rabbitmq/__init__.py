@@ -31,6 +31,10 @@ class RabbitMQStore:
         mq.send('queue', 'message', channel_id=channel_id)
         # 释放channel
         mq.close_channel(channel_id)
+        
+    支持客户端名称设置:
+        # 设置客户端名称用于连接标识
+        mq = RabbitMQStore(client_name="my-app-v1.0")
     """
 
     MAX_SEND_ATTEMPTS: int = 6  # 最大发送重试次数
@@ -46,6 +50,7 @@ class RabbitMQStore:
             port: Optional[int] = None,
             username: Optional[str] = None,
             password: Optional[str] = None,
+            client_name: Optional[str] = "use-rabbitmq-client",
             **kwargs,
     ):
         """
@@ -54,6 +59,7 @@ class RabbitMQStore:
         :param port: RabbitMQ port
         :param username: RabbitMQ username
         :param password: RabbitMQ password
+        :param client_name: 客户端名称，用于标识连接，默认值为"use-rabbitmq-client"
         :param kwargs: RabbitMQ parameters
         """
         self.__shutdown = False
@@ -64,6 +70,7 @@ class RabbitMQStore:
             "username": username or os.environ.get("RABBITMQ_USERNAME", "guest"),
             "password": password or os.environ.get("RABBITMQ_PASSWORD", "guest"),
         }
+        self.parameters["client_properties"] = {"connection_name": client_name}
         if kwargs:
             self.parameters.update(kwargs)
         self.confirm_delivery = confirm_delivery

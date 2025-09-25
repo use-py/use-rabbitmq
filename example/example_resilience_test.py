@@ -147,7 +147,8 @@ class ResilienceTest:
                     host='localhost',
                     port=5672,
                     username='admin',
-                    password='admin'
+                    password='admin',
+                    client_name='resilience-test-client'
                 )
                 
                 # 测试连接
@@ -288,7 +289,7 @@ class ResilienceTest:
         
         def message_handler(message):
             try:
-                content = message.body.decode('utf-8')
+                content = message.body
                 logger.info(f"📥 收到消息: {content}")
                 self.monitor.record_message_processed()
                 
