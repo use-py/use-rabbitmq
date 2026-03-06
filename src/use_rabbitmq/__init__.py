@@ -85,6 +85,50 @@ class RabbitMQStore:
         self._channels: Dict[str, amqpstorm.Channel] = {}
         self._channel_lock = threading.Lock()
 
+    def _close_channel_safely(self, channel: Optional[amqpstorm.Channel], channel_id: Optional[str] = None) -> None:
+        """
+        安全关闭单个channel
+
+        :param channel: 要关闭的channel
+        :param channel_id: channel ID（可选，用于日志）
+        """
+        if channel and channel.is_open:
+            try:
+                channel.close()
+            except Exception as exc:
+                log_msg = f"RabbitmqStore channel"
+                if channel_id:
+                    log_msg += f" {channel_id}"
+                logger.exception(f"{log_msg} close error<{exc}>")
+
+    def _close_all_extra_channels(self) -> None:
+        """关闭所有额外的channels"""
+        with self._channel_lock:
+            for channel_id, channel in list(self._channels.items()):
+                try:
+                    self._close_channel_safely(channel, channel_id)
+                finally:
+                    self._channels.pop(channel_id, None)
+
+    def _close_default_channel(self) -> None:
+        """关闭默认channel"""
+        if self._channel:
+            try:
+                self._close_channel_safely(self._channel)
+            finally:
+                self._channel = None
+
+    def _close_connection(self) -> None:
+        """关闭RabbitMQ连接"""
+        if self._connection:
+            try:
+                if self._connection.is_open:
+                    self._connection.close()
+            except Exception as exc:
+                logger.exception(f"RabbitmqStore connection close error<{exc}>")
+            finally:
+                self._connection = None
+
     def _create_connection(self) -> amqpstorm.Connection:
         attempts = 1
         reconnection_delay = self.RECONNECTION_DELAY
@@ -119,36 +163,14 @@ class RabbitMQStore:
     @connection.deleter
     def connection(self) -> None:
         with self._lock:
-            # 先删除所有channels
-            with self._channel_lock:
-                for channel_id, channel in list(self._channels.items()):
-                    try:
-                        if channel and channel.is_open:
-                            channel.close()
-                    except Exception as exc:
-                        logger.exception(f"RabbitmqStore channel {channel_id} close error<{exc}>")
-                    finally:
-                        del self._channels[channel_id]
-            
-            # 删除默认channel
-            if self._channel:
-                try:
-                    if self._channel.is_open:
-                        self._channel.close()
-                except Exception as exc:
-                    logger.exception(f"RabbitmqStore default channel close error<{exc}>")
-                finally:
-                    self._channel = None
-            
-            # 删除连接
-            if self._connection:
-                try:
-                    if self._connection.is_open:
-                        self._connection.close()
-                except Exception as exc:
-                    logger.exception(f"RabbitmqStore connection close error<{exc}>")
-                finally:
-                    self._connection = None
+            # 先关闭所有额外的channels
+            self._close_all_extra_channels()
+
+            # 关闭默认channel
+            self._close_default_channel()
+
+            # 关闭连接
+            self._close_connection()
 
     @property
     def channel(self) -> amqpstorm.Channel:
@@ -175,14 +197,7 @@ class RabbitMQStore:
     @channel.deleter
     def channel(self):
         with self._lock:
-            if self._channel:
-                try:
-                    if self._channel.is_open:
-                        self._channel.close()
-                except Exception as exc:
-                    logger.exception(f"RabbitmqStore channel close error<{exc}>")
-                finally:
-                    self._channel = None
+            self._close_default_channel()
 
     def create_channel(self) -> str:
         """
@@ -240,17 +255,14 @@ class RabbitMQStore:
     def close_channel(self, channel_id: str) -> None:
         """
         关闭并移除指定的channel
-        
+
         :param channel_id: channel ID
         """
         with self._channel_lock:
             if channel_id in self._channels:
                 channel = self._channels[channel_id]
                 try:
-                    if channel.is_open:
-                        channel.close()
-                except Exception as exc:
-                    logger.exception(f"Error closing channel {channel_id}: {exc}")
+                    self._close_channel_safely(channel, channel_id)
                 finally:
                     del self._channels[channel_id]
                     logger.debug(f"Closed channel: {channel_id}")
@@ -280,35 +292,13 @@ class RabbitMQStore:
                         logger.warning(f"Error stopping consuming during shutdown: {exc}")
 
                 # 关闭所有额外的 channels
-                with self._channel_lock:
-                    for channel_id, channel in list(self._channels.items()):
-                        try:
-                            if channel and channel.is_open:
-                                channel.close()
-                        except Exception as exc:
-                            logger.warning(f"Error closing extra channel {channel_id} during shutdown: {exc}")
-                        finally:
-                            self._channels.pop(channel_id, None)
+                self._close_all_extra_channels()
 
                 # 关闭默认通道
-                if self._channel:
-                    try:
-                        if self._channel.is_open:
-                            self._channel.close()
-                    except Exception as exc:
-                        logger.warning(f"Error closing channel during shutdown: {exc}")
-                    finally:
-                        self._channel = None
+                self._close_default_channel()
 
                 # 关闭连接
-                if self._connection:
-                    try:
-                        if self._connection.is_open:
-                            self._connection.close()
-                    except Exception as exc:
-                        logger.warning(f"Error closing connection during shutdown: {exc}")
-                    finally:
-                        self._connection = None
+                self._close_connection()
             except Exception as exc:
                 logger.error(f"Error during shutdown: {exc}")
 
