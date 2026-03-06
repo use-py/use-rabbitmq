@@ -208,18 +208,19 @@ class RabbitMQStore:
     def get_channel(self, channel_id: Optional[str] = None) -> amqpstorm.Channel:
         """
         获取指定的channel，如果channel_id为None则返回默认channel
-        
+
         :param channel_id: channel ID，如果为None则使用默认channel
         :return: amqpstorm.Channel
         """
         if channel_id is None:
             return self.channel
-        
+
         with self._channel_lock:
             if channel_id not in self._channels:
                 raise ValueError(f"Channel {channel_id} not found")
-            
+
             channel = self._channels[channel_id]
+            # 将 is_open 检查移到锁内，避免竞争条件
             if not channel.is_open:
                 # 重新创建channel
                 try:
@@ -233,7 +234,7 @@ class RabbitMQStore:
                 except Exception as exc:
                     logger.exception(f"Failed to recreate channel {channel_id}: {exc}")
                     raise
-            
+
             return channel
 
     def close_channel(self, channel_id: str) -> None:
@@ -277,8 +278,19 @@ class RabbitMQStore:
                         self._channel.stop_consuming()
                     except Exception as exc:
                         logger.warning(f"Error stopping consuming during shutdown: {exc}")
-                
-                # 关闭通道
+
+                # 关闭所有额外的 channels
+                with self._channel_lock:
+                    for channel_id, channel in list(self._channels.items()):
+                        try:
+                            if channel and channel.is_open:
+                                channel.close()
+                        except Exception as exc:
+                            logger.warning(f"Error closing extra channel {channel_id} during shutdown: {exc}")
+                        finally:
+                            self._channels.pop(channel_id, None)
+
+                # 关闭默认通道
                 if self._channel:
                     try:
                         if self._channel.is_open:
@@ -287,7 +299,7 @@ class RabbitMQStore:
                         logger.warning(f"Error closing channel during shutdown: {exc}")
                     finally:
                         self._channel = None
-                
+
                 # 关闭连接
                 if self._connection:
                     try:
@@ -406,7 +418,8 @@ class RabbitMQStore:
                 if self.__shutdown:
                     break
                 logger.error(f"RabbitmqStore channel error: {exc}")
-                del channel
+                # channel 是局部变量，不需要手动清理
+                # 下次调用 start_consuming 会自动重建 channel
                 time.sleep(reconnection_delay)
                 reconnection_delay = min(
                     reconnection_delay * 2, self.MAX_CONNECTION_DELAY
@@ -475,6 +488,7 @@ class RabbitMQStore:
 
     def stop_listener(self, queue_name: str) -> None:
         """停止监听指定队列"""
+        self.__shutdown = True
         try:
             if self._channel and self._channel.is_open:
                 # 停止消费
@@ -483,15 +497,6 @@ class RabbitMQStore:
                 self._channel.basic.cancel(queue_name)
         except Exception as exc:
             logger.warning(f"Error canceling consumer for queue {queue_name}: {exc}")
-        finally:
-            # 设置关闭标志
-            self.__shutdown = True
-            # 关闭连接
-            try:
-                del self.channel
-                del self.connection
-            except Exception as exc:
-                logger.warning(f"Error closing connection: {exc}")
 
 
 class RabbitListener:
